@@ -4,7 +4,7 @@ from datetime import datetime
 _rc_map={}
 _df_bit=[False]
 _vkey='c7dce73a81fb5c4c64604838fba7cbf4ae63d068cde88086aca0cb8be65a71fb'
-_blk_ref = "f59f8a5e33660a0f610a191d26da5c3078534e5bef74e826d1870ff7219ccb29"
+_blk_ref = "f0915b17b082a765f57daccc43f9acdfd4477b8e977b6f8b396b96d36d59154c"
 _aux_ref = ["1ec2e83491a8263bbbb2930a40788807ffcfdeda474ebe57a4d56f6ed8516ba2", "3d101929ff1a6ee9004a02c90c7ad20ebd9b86ecf125208e21c4f4468eff3a82"]
 def _init_blk():
 	_tampered=False
@@ -2516,8 +2516,10 @@ def _sys_auth():
 				else:sisa_hari=(exp_date-now_date).days
 			except Exception:pass
 		try:
-			import hmac as _hm,hashlib as _hs;_sig_rcv=data.get('sig','')if isinstance(data,dict)else'';_status=data.get('status','')if isinstance(data,dict)else'';_exp=data.get('expired_at','')if isinstance(data,dict)else'';_sig_exp=_hm.new(bytes.fromhex(_vkey),f"{hwid}|{_status}|{_exp}".encode(),_hs.sha256).hexdigest()
-			if not _hm.compare_digest(_sig_exp,_sig_rcv):fast_clear();print('\n  \x1b[31m[ERROR]\x1b[0m Konfigurasi tidak valid.');sys.stdout.write('\x1b[?25h');sys.exit(0)
+			import hmac as _hm,hashlib as _hs;_sudah_terdaftar=isinstance(data,dict)and bool(data)
+			if _sudah_terdaftar:
+				_sig_rcv=data.get('sig','');_status=data.get('status','');_exp=data.get('expired_at','');_sig_exp=_hm.new(bytes.fromhex(_vkey),f"{hwid}|{_status}|{_exp}".encode(),_hs.sha256).hexdigest()
+				if not _hm.compare_digest(_sig_exp,_sig_rcv):fast_clear();print('\n  \x1b[31m[ERROR]\x1b[0m Konfigurasi tidak valid.');sys.stdout.write('\x1b[?25h');sys.exit(0)
 		except Exception:pass
 		if not data or not isinstance(data,dict)or data.get('status')!='active'or is_expired:
 			print('\n  \x1b[31m[AKSES DITOLAK]\x1b[0m Lisensi Premium tidak ditemukan, belum aktif, atau sudah kedaluwarsa!')
