@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys,shutil,os,subprocess,difflib,json,termios,tty,signal,select,time,urllib.request,urllib.error
+import sys,shutil,os,subprocess,difflib,json,termios,tty,re,zipfile,signal,select,time,urllib.request,urllib.error
 from datetime import datetime
 _rc_map={}
 _df_bit=[False]
@@ -82,6 +82,30 @@ SELF_TOOL_ROOT='/storage/emulated/0/Download/FRTool/dev'
 def _is_self_tool_root():
 	try:return os.path.normpath(os.path.abspath(SOURCE_ROOT))==os.path.normpath(os.path.abspath(SELF_TOOL_ROOT))
 	except Exception:return False
+CAPROJ_EXPORT_BASE='/storage/emulated/0/Download/Project-App'
+CAPROJ_EXPORT_SKIP_DIRS={'.git','build','.gradle','.idea','__pycache__'}
+CAPROJ_MODE_ON=False
+def _is_caproj_project(root):
+	try:return os.path.isfile(os.path.join(root,'manifest.json'))and os.path.isfile(os.path.join(root,'project','app','module.toml'))
+	except Exception:return False
+def _slugify_caproj_name(name):words=re.split('[^a-z0-9]+',name.lower());first_word=next((w for w in words if w),'project');return first_word
+def _export_caproj(root):
+	try:
+		manifest_path=os.path.join(root,'manifest.json')
+		with open(manifest_path,'r',encoding='utf-8')as f:manifest_data=json.load(f)
+		proj_name=manifest_data.get('name')or os.path.basename(root);clean_name=_slugify_caproj_name(proj_name);export_dir=os.path.join(CAPROJ_EXPORT_BASE,clean_name);os.makedirs(export_dir,exist_ok=True);out_path=os.path.join(export_dir,f"{clean_name}.caproj")
+		if os.path.isfile(out_path):os.remove(out_path)
+		with zipfile.ZipFile(out_path,'w',zipfile.ZIP_DEFLATED)as zf:
+			zf.write(manifest_path,'manifest.json');icon_path=os.path.join(root,'icon.png')
+			if os.path.isfile(icon_path):zf.write(icon_path,'icon.png')
+			project_dir=os.path.join(root,'project')
+			for(dirpath,dirnames,filenames)in os.walk(project_dir):
+				dirnames[:]=[d for d in dirnames if d not in CAPROJ_EXPORT_SKIP_DIRS]
+				for fn in filenames:full=os.path.join(dirpath,fn);arcname=os.path.relpath(full,root);zf.write(full,arcname)
+		try:subprocess.run(['termux-media-scan',out_path],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5)
+		except Exception:pass
+		return True,out_path,None
+	except Exception as e:return False,None,str(e)
 C_PURPLE=166
 C_VIOLET=209
 C_CYAN=215
@@ -276,19 +300,33 @@ def pilih_folder():
 		elif k in('m','M'):sel_idx=len(items)-1
 		elif k in('ESC','q','Q','0'):return False
 		elif k=='RESIZE':continue
-IGNORE_DIRS={'node_modules','.git','.next','dist','build','__pycache__','.expo','.patch_backups','.vercel','.cache','.turbo','venv','.venv','env','.env','ios','android'}
+IGNORE_DIRS={'node_modules','.git','.next','dist','build','__pycache__','.expo','.patch_backups','.vercel','.cache','.turbo','venv','.venv','env','.env','ios','android','auth_info'}
 IGNORE_EXTS={'.bak','.log','.tmp','.swp','.orig','.pyc'}
-def load_frignore():
-	frignore_path=os.path.join(SOURCE_ROOT,'.frignore')
+BASE_IGNORE_DIRS=frozenset(IGNORE_DIRS)
+BASE_IGNORE_EXTS=frozenset(IGNORE_EXTS)
+def _read_frignore_raw():
+	frignore_path=os.path.join(SOURCE_ROOT,'.frignore');entries=[]
 	if os.path.exists(frignore_path):
 		try:
 			with open(frignore_path,'r',encoding='utf-8')as f:
 				for line in f:
 					line=line.strip()
 					if not line or line.startswith('#'):continue
-					if line.startswith('*.'):IGNORE_EXTS.add(line[1:])
-					else:IGNORE_DIRS.add(line.strip('/'))
+					entries.append(line)
 		except Exception:pass
+	return entries
+def _write_frignore_raw(entries):
+	frignore_path=os.path.join(SOURCE_ROOT,'.frignore')
+	try:
+		with open(frignore_path,'w',encoding='utf-8')as f:
+			f.write('# Folder/ekstensi tambahan yang di-skip FR Tool saat scan & patch\n');f.write('# Format: satu nama folder per baris, atau *.ext untuk ekstensi\n')
+			for e in entries:f.write(e+'\n')
+	except Exception:pass
+def load_frignore():
+	global IGNORE_DIRS,IGNORE_EXTS;IGNORE_DIRS=set(BASE_IGNORE_DIRS);IGNORE_EXTS=set(BASE_IGNORE_EXTS)
+	for line in _read_frignore_raw():
+		if line.startswith('*.'):IGNORE_EXTS.add(line[1:])
+		else:IGNORE_DIRS.add(line.strip('/'))
 MIN_TERM_COLS=26
 MIN_TERM_LINES=16
 _last_draw_size=None
@@ -627,6 +665,9 @@ def parse_patch(text):
 		elif re.match('^:\\s*find$',tag_check):
 			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[];current_find=None
 			state='find';buffer=[]
+		elif re.match('^:\\s*new_file$',tag_check):
+			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[]
+			current_find='__NEW_FILE__';state='after_find'
 		elif re.match('^:\\s*end_find$',tag_check):
 			if state=='find':current_find='\n'.join(buffer);buffer=[];state='after_find'
 		elif re.match('^:\\s*replace$',tag_check):
@@ -1036,12 +1077,33 @@ def ambil_konteks_file(find_text,content,n_lines=20):
 		if pattern.match(line):func_list.append(f"  • {line.strip()[:70]}  (baris {i})")
 	func_str='\n'.join(func_list[:20])if func_list else'  (tidak ada fungsi/class yang terdeteksi)';return None,func_str
 def paste_patch(dry_run=False):
-	sys.stdout.write('\x1b[?25h');sys.stdout.flush();clear();print();_pp_term_cols=_term_size().columns;_pp_safe_logo=[l[:max(10,_pp_term_cols-2)]for l in LOGO_PATCH];_pp_sep_w=max(20,min(_pp_term_cols-2,int(_pp_term_cols*.95)));_pp_dir_short=SOURCE_ROOT if len(SOURCE_ROOT)<=48 else'…'+SOURCE_ROOT[-47:];_pp_buf=[];_pp_buf.extend(gradient_ascii_lines(_pp_safe_logo,RGB_PATCH_DARK,RGB_PATCH_LIGHT));_pp_buf.append('')
-	if dry_run:_pp_buf.append('  \x1b[48;5;234m\x1b[1;38;5;45m  ⚠  MODE DRY-RUN — Tidak ada file yang akan diubah  ⚠\x1b[0m');_pp_buf.append('')
-	_pp_buf.append(f"  [38;5;244mDIR[0m [1;38;5;45m{_pp_dir_short}[0m");_pp_buf.append('')
-	if _amend_target_valid()and not dry_run:_pp_judul_amend=_git_head_subject()or'(tanpa pesan commit)';_pp_buf.append(f'  [48;5;234m[1;97m ⚠  PERUBAHAN INI AKAN MENGGANTIKAN COMMIT:[0m[48;5;234m[1;38;5;{C_VIOLET}m "{_pp_judul_amend}" [0m');_pp_buf.append('')
-	_pp_buf.append('  \x1b[1;38;5;215m▸ Format patch yang diterima\x1b[0m \x1b[38;5;244m(hasil dari AI):\x1b[0m');_pp_buf.append('  \x1b[38;5;208m┌─────────────────────────────────┐\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m \x1b[1;38;5;215m:file\x1b[0m src/App.js                \x1b[38;5;208m│\x1b[0m  \x1b[38;5;244m← opsional\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m \x1b[1;38;5;215m:find\x1b[0m                           \x1b[38;5;208m│\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m kode lama                       \x1b[38;5;208m│\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m \x1b[1;38;5;215m:end_find\x1b[0m                       \x1b[38;5;208m│\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m \x1b[1;38;5;215m:replace\x1b[0m                        \x1b[38;5;208m│\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m kode baru                       \x1b[38;5;208m│\x1b[0m');_pp_buf.append('  \x1b[38;5;208m│\x1b[0m \x1b[1;38;5;215m:end_replace\x1b[0m                    \x1b[38;5;208m│\x1b[0m');_pp_buf.append('  \x1b[38;5;208m└─────────────────────────────────┘\x1b[0m');_pp_buf.append('');_pp_buf.append('  \x1b[38;5;208m✎\x1b[0m Tambahkan \x1b[1;38;5;215m":title <judul>"\x1b[0m di baris paling atas patch');_pp_buf.append('     agar dipakai otomatis sebagai nama commit git.');_pp_buf.append('  \x1b[38;5;244mFormat lain yang didukung:\x1b[0m \x1b[38;5;215m:replace/:end\x1b[0m  dan  \x1b[38;5;215m===FIND===/===REPLACE===\x1b[0m');_pp_buf.append('  \x1b[38;5;244mℹ  Ketik DONE setelah selesai. Ketik Q atau tekan Enter 2x untuk batal\x1b[0m');_pp_buf.append('');_pp_buf.append(f"  [1;38;5;215m↓ SILAKAN PASTE (TEMPEL) KODE PATCH DI BAWAH INI ↓[0m");_pp_buf.append(f"  [38;5;208m{"─"*_pp_sep_w}[0m");_pp_content_w=max((_vlen(l)for l in _pp_buf if l),default=0);_pp_extra_margin=max(0,(_pp_term_cols-_pp_content_w)//2)
-	for _pp_line in _pp_buf:print(' '*_pp_extra_margin+_pp_line if _pp_line else _pp_line)
+	sys.stdout.write('\x1b[?25h');sys.stdout.flush();clear();print();_pp_term_cols=_term_size().columns
+	def _c(text):vlen=_vlen(text);pad=max(0,(_pp_term_cols-vlen)//2);return' '*pad+text
+	_pp_safe_logo=[l[:max(10,_pp_term_cols-2)]for l in LOGO_PATCH];_pp_dir_short=SOURCE_ROOT if len(SOURCE_ROOT)<=48 else'…'+SOURCE_ROOT[-47:];_pp_buf=[]
+	for l in gradient_ascii_lines(_pp_safe_logo,RGB_PATCH_DARK,RGB_PATCH_LIGHT):_pp_buf.append(_c(l))
+	_pp_buf.append('')
+	if dry_run:_pp_buf.append(_c('\x1b[48;5;234m\x1b[1;38;5;45m  ⚠  MODE DRY-RUN — Tidak ada file yang akan diubah  ⚠  \x1b[0m'));_pp_buf.append('')
+	_pp_buf.append(_c(f"[38;5;244mDIR[0m [1;38;5;45m{_pp_dir_short}[0m"));_pp_buf.append('')
+	if _amend_target_valid()and not dry_run:_pp_judul_amend=_git_head_subject()or'(tanpa pesan commit)';_pp_buf.append(_c(f'[48;5;234m[1;97m ⚠ PERUBAHAN INI AKAN MENGGANTIKAN COMMIT:[0m[48;5;234m[1;38;5;{C_VIOLET}m "{_pp_judul_amend}" [0m'));_pp_buf.append('')
+	left_lines=['\x1b[1;38;5;215m:file\x1b[0m src/App.js','\x1b[1;38;5;215m:find\x1b[0m','kode lama','\x1b[1;38;5;215m:end_find\x1b[0m','\x1b[1;38;5;215m:replace\x1b[0m','kode baru','\x1b[1;38;5;215m:end_replace\x1b[0m'];right_lines=['\x1b[1;38;5;215m:file\x1b[0m src/New.js','\x1b[1;38;5;46m:new_file\x1b[0m','\x1b[1;38;5;215m:replace\x1b[0m','kode file baru','\x1b[1;38;5;215m:end_replace\x1b[0m'];is_side_by_side=_pp_term_cols>=66
+	if is_side_by_side:
+		while len(right_lines)<len(left_lines):right_lines.append('')
+		while len(left_lines)<len(right_lines):left_lines.append('')
+	W_BOX=27;left_box=['\x1b[1;38;5;215m▸ Format Edit File:\x1b[0m'];left_box.append(f"[38;5;208m┌{"─"*W_BOX}┐[0m")
+	for text in left_lines:left_box.append(f"[38;5;208m│[0m {_pad_cell(text,W_BOX-1)}[38;5;208m│[0m")
+	left_box.append(f"[38;5;208m└{"─"*W_BOX}┘[0m");right_box=['\x1b[1;38;5;46m▸ File Baru (:new_file):\x1b[0m'];right_box.append(f"[38;5;46m┌{"─"*W_BOX}┐[0m")
+	for text in right_lines:right_box.append(f"[38;5;46m│[0m {_pad_cell(text,W_BOX-1)}[38;5;46m│[0m")
+	right_box.append(f"[38;5;46m└{"─"*W_BOX}┘[0m")
+	if is_side_by_side:
+		for(l,r)in zip(left_box,right_box):_pp_buf.append(_c(_pad_cell(l,33)+r))
+	else:
+		for l in left_box:_pp_buf.append(_c(l))
+		_pp_buf.append('')
+		for r in right_box:_pp_buf.append(_c(r))
+	_pp_buf.append('');info_lines=['\x1b[38;5;208m✎\x1b[0m Tambahkan \x1b[1;38;5;215m":title <judul>"\x1b[0m di baris paling atas patch agar jadi nama commit.','\x1b[38;5;244mFormat lama didukung:\x1b[0m \x1b[38;5;215m:replace/:end\x1b[0m dan \x1b[38;5;215m===FIND===/===REPLACE===\x1b[0m','\x1b[38;5;244mℹ Ketik DONE setelah selesai. Ketik Q atau Enter 2x untuk batal\x1b[0m']
+	for line in info_lines:_pp_buf.append(_c(line))
+	_pp_buf.append('');_pp_buf.append(_c('\x1b[1;38;5;215m↓ SILAKAN PASTE (TEMPEL) KODE PATCH DI BAWAH INI ↓\x1b[0m'));_pp_sep_w=max(20,min(_pp_term_cols-2,74));_pp_buf.append(_c(f"[38;5;208m{"─"*_pp_sep_w}[0m"))
+	for _pp_line in _pp_buf:print(_pp_line)
 	lines=[];empty_count=0
 	while True:
 		try:line=input()
@@ -1136,6 +1198,39 @@ def _ensure_rescue_script():
 			with open(path,'w',encoding='utf-8')as f:f.write(content)
 	except Exception:pass
 def tanya_mode_replace(count,label):print(f"  [PERHATIAN] Blok #{label} ditemukan sebanyak {count} kali dalam file ini.");print(f"      [A] Ganti semua kemunculan   [S] Ganti hanya yang pertama");print('      Pilihan Anda: ',end='');jawab=input().strip().upper();return'all'if jawab=='A'else'first'
+def _is_path_inside_root(path):
+	try:root=os.path.realpath(SOURCE_ROOT);target=os.path.realpath(path);return target==root or target.startswith(root+os.sep)
+	except Exception:return False
+def _resolve_create_dir(filename):
+	clean=filename.replace('\\','/').lstrip('/');parts=[p for p in clean.split('/')if p not in('','.','..')]
+	if not parts:return SOURCE_ROOT,filename
+	base=parts[-1];target_dir_parts=parts[:-1]
+	if not target_dir_parts:return SOURCE_ROOT,base
+	existing_dirs=['']
+	for(dirpath,dirnames,_files)in os.walk(SOURCE_ROOT):dirnames[:]=[d for d in dirnames if d not in IGNORE_DIRS];rel=os.path.relpath(dirpath,SOURCE_ROOT);existing_dirs.append(''if rel=='.'else rel.replace('\\','/'))
+	target_dir_str='/'.join(target_dir_parts)
+	if target_dir_str in existing_dirs:return os.path.join(SOURCE_ROOT,target_dir_str),base
+	best_score=0;scores={}
+	for cand in existing_dirs:
+		cand_parts=[p for p in cand.split('/')if p];score=0
+		for(a,b)in zip(reversed(target_dir_parts),reversed(cand_parts)):
+			if a.lower()==b.lower():score+=1
+			else:break
+		scores[cand]=score
+		if score>best_score:best_score=score
+	best_dirs=[d for(d,s)in scores.items()if s==best_score]
+	if best_score>0 and len(best_dirs)==1:return os.path.join(SOURCE_ROOT,best_dirs[0]),base
+	cands=best_dirs if best_score>0 else existing_dirs;cands.sort(key=lambda x:(x.count('/'),x.lower()));sel=0
+	while True:
+		hint='↑↓ Pilih  ·  Enter Konfirmasi  ·  Esc Batal'
+		if best_score>0:judul='FOLDER TUJUAN MERAGUKAN (TIE)';extra=[f"[33mFolder tujuan tidak bisa dipastikan secara otomatis.[0m",f"Path dari AI: [36m{target_dir_str}[0m",f"Pilih salah satu dari {len(cands)} kecocokan terdekat:"]
+		else:judul='FOLDER TUJUAN TIDAK DITEMUKAN';extra=[f"[31mPath dari AI sama sekali tidak mirip dengan folder project.[0m",f"Path dari AI: [36m{target_dir_str}[0m",f"Pilih folder tujuan yang tepat:"]
+		_draw_pilih_list(sel,cands,judul,hint,lambda i,d:f"📁 {d}/"if d else'📁 / (Root Project)',extra_top=extra);k=get_key(animate=True)
+		if k=='ANIMATE'or k=='RESIZE':continue
+		if k=='UP':sel=(sel-1)%len(cands)
+		elif k=='DOWN':sel=(sel+1)%len(cands)
+		elif k=='ENTER':sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return os.path.join(SOURCE_ROOT,cands[sel]),base
+		elif k in('ESC','q','Q','0'):sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return None,base
 def scan_dan_apply(patch_text,dry_run=False):
 	import time;global _GLOBAL_TIMER_START;start_time=time.time();_GLOBAL_TIMER_START=start_time;clear();_sa_term_cols=_term_size().columns;_sa_sep_w=max(20,min(_sa_term_cols-2,int(_sa_term_cols*.95)));file_patches=parse_patch(patch_text);_patch_title=_extract_patch_title(patch_text)
 	if not file_patches:print('[GAGAL] Tidak ada blok patch yang valid ditemukan.');print();print('Pastikan patch menggunakan salah satu format berikut:');print('  :find / :replace / :end');print('  atau format lama: ===FIND=== ===REPLACE=== ===END===');input('\nTekan Enter untuk kembali ke menu...');return
@@ -1147,7 +1242,9 @@ def scan_dan_apply(patch_text,dry_run=False):
 		if _proj_cache_ref[0]is None:_proj_cache_ref[0]=_build_project_cache(SOURCE_ROOT)
 		return _proj_cache_ref[0]
 	for(filename,pairs)in file_patches.items():
-		auto_mode=filename=='__AUTO__';print(f"📄 {"[Deteksi otomatis file]"if auto_mode else filename}");content,path_ok,filepath='',False,None
+		auto_mode=filename=='__AUTO__';print(f"📄 {"[Deteksi otomatis file]"if auto_mode else filename}")
+		if not auto_mode and not _is_path_inside_root(os.path.join(SOURCE_ROOT,filename)):print(f"  [31m[DITOLAK][0m Path [1m{filename}[0m mengarah KELUAR folder project — dianggap tidak valid, semua blok di file ini dilewati.");log_fail_event(0,'path_outside_project',filename);all_ok=False;continue
+		content,path_ok,filepath='',False,None
 		if not auto_mode:
 			filepath=os.path.join(SOURCE_ROOT,filename);path_ok=os.path.exists(filepath)
 			if path_ok:
@@ -1160,38 +1257,30 @@ def scan_dan_apply(patch_text,dry_run=False):
 				if res is None:return
 				if res[2].startswith('head_tail'):return res[0]+1
 				return content_str[:res[0]].count('\n')+1
-			if path_ok:
-				stop_ev_m0,t_m0=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)}...",color='214');result=find_in_content(find_stripped,content,block_label=i);_spinner_stop(stop_ev_m0,t_m0)
-				if result and result[2]=='auto_anchor_confirm':
-					h_idx,t_idx,_=result
-					if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),content.splitlines(),i):result=h_idx,t_idx,'auto_anchor'
-					else:result=None
-				if result and result[2].startswith('head_tail'):
-					if not _confirm_head_tail_skip(result,content,i):result=None
-				if result:_,_,match_type=result;match_line_no=_line_from_result(result,content);matched_file=filepath;matched_content=content;final_match_result=result
-				else:context_for_fail=filepath,content;print(f"  [33m[Fallback 1: Directory Scan][0m Blok #{i} tidak cocok di file target, memindai seluruh folder...")
-			if matched_file is None:
-				stop_ev_sc,t=_spinner_start(f"Menjalankan Fallback 1 (Exact/Fuzzy/Regex) untuk blok #{i}/{len(pairs)}...");matches=cari_file_berisi_kode(find_stripped,cache=_get_proj_cache());_spinner_stop(stop_ev_sc,t)
-				if len(matches)==1:
-					temp_file=os.path.join(SOURCE_ROOT,matches[0])
-					with open(temp_file,'r',encoding='utf-8')as f:temp_content=f.read()
-					stop_ev_m1,t_m1=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)} di {matches[0]}...",color='214');result=find_in_content(find_stripped,temp_content,block_label=i);_spinner_stop(stop_ev_m1,t_m1)
+			is_explicit_new=find_stripped=='__NEW_FILE__'
+			if is_explicit_new:
+				new_dir,new_base=_resolve_create_dir(filename)
+				if new_dir is None:print(f"  [31m[BATAL][0m Auto-Create dibatalkan oleh user.");log_fail_event(i,'auto_create_cancelled',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+				new_filepath=os.path.join(new_dir,new_base)
+				if not _is_path_inside_root(new_filepath):print(f"  [31m[DITOLAK][0m Auto-Create dibatalkan — target di luar folder project: [1m{filename}[0m");print(f"  [GAGAL] Blok #{i} — File baru ditolak.");log_fail_event(i,'auto_create_outside_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+				rel_new=os.path.relpath(new_filepath,SOURCE_ROOT);print(f"  [36m[Auto-Create][0m File baru akan dibuat (via :new_file): [1;36m{rel_new}[0m");matched_file=new_filepath;matched_content='';match_type='new_file';match_line_no=None;final_match_result=0,0,'new_file';find_stripped='';filepath=new_filepath;path_ok=True;content=replace_stripped
+			else:
+				if path_ok:
+					stop_ev_m0,t_m0=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)}...",color='214');result=find_in_content(find_stripped,content,block_label=i);_spinner_stop(stop_ev_m0,t_m0)
 					if result and result[2]=='auto_anchor_confirm':
 						h_idx,t_idx,_=result
-						if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),temp_content.splitlines(),i):result=h_idx,t_idx,'auto_anchor'
+						if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),content.splitlines(),i):result=h_idx,t_idx,'auto_anchor'
 						else:result=None
 					if result and result[2].startswith('head_tail'):
-						if not _confirm_head_tail_skip(result,temp_content,i):result=None
-					if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result
-					else:context_for_fail=temp_file,temp_content
-				elif len(matches)>1:
-					print(f"  [33m[PILIHAN][0m Blok #{i} ditemukan di [1m{len(matches)}[0m file berbeda:")
-					for(j,m)in enumerate(matches,1):print(f"      [36m[{j}][0m {m}")
-					print('      Masukkan nomor file yang dituju: ',end='')
-					try:
-						pilih=int(input().strip());temp_file=os.path.join(SOURCE_ROOT,matches[pilih-1])
+						if not _confirm_head_tail_skip(result,content,i):result=None
+					if result:_,_,match_type=result;match_line_no=_line_from_result(result,content);matched_file=filepath;matched_content=content;final_match_result=result
+					else:context_for_fail=filepath,content;print(f"  [33m[Fallback 1: Directory Scan][0m Blok #{i} tidak cocok di file target, memindai seluruh folder...")
+				if matched_file is None:
+					stop_ev_sc,t=_spinner_start(f"Menjalankan Fallback 1 (Exact/Fuzzy/Regex) untuk blok #{i}/{len(pairs)}...");matches=cari_file_berisi_kode(find_stripped,cache=_get_proj_cache());_spinner_stop(stop_ev_sc,t)
+					if len(matches)==1:
+						temp_file=os.path.join(SOURCE_ROOT,matches[0])
 						with open(temp_file,'r',encoding='utf-8')as f:temp_content=f.read()
-						stop_ev_m2,t_m2=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)} di {matches[pilih-1]}...",color='214');result=find_in_content(find_stripped,temp_content,block_label=i);_spinner_stop(stop_ev_m2,t_m2)
+						stop_ev_m1,t_m1=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)} di {matches[0]}...",color='214');result=find_in_content(find_stripped,temp_content,block_label=i);_spinner_stop(stop_ev_m1,t_m1)
 						if result and result[2]=='auto_anchor_confirm':
 							h_idx,t_idx,_=result
 							if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),temp_content.splitlines(),i):result=h_idx,t_idx,'auto_anchor'
@@ -1200,33 +1289,59 @@ def scan_dan_apply(patch_text,dry_run=False):
 							if not _confirm_head_tail_skip(result,temp_content,i):result=None
 						if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result
 						else:context_for_fail=temp_file,temp_content
-					except:print(f"  [31m[GAGAL][0m Blok #{i} — Pilihan tidak valid, blok dilewati.");all_ok=False;continue
-				if matched_file is None:
-					if context_for_fail is None and not auto_mode:
+					elif len(matches)>1:
+						print(f"  [33m[PILIHAN][0m Blok #{i} ditemukan di [1m{len(matches)}[0m file berbeda:")
+						for(j,m)in enumerate(matches,1):print(f"      [36m[{j}][0m {m}")
+						print('      Masukkan nomor file yang dituju: ',end='')
 						try:
-							with open(os.path.join(SOURCE_ROOT,filename),'r',encoding='utf-8')as f:context_for_fail=os.path.join(SOURCE_ROOT,filename),f.read()
-						except:pass
-					if context_for_fail is None:
-						stop_ev_p,tp=_spinner_start('Menjalankan Fallback 2: Partial Token Scan (Mencari file yang paling mirip)...',color='129');partial_hits=cari_file_partial(find_stripped,cache=_get_proj_cache());_spinner_stop(stop_ev_p,tp)
-						if partial_hits:
-							best_fp,best_score,best_block,best_rel=partial_hits[0];print(f"  [35m[Fallback 2: Partial Scan][0m Kandidat terdekat: [1;36m{best_rel}[0m [38;5;129m[Token Similarity: {best_score:.0%}][0m")
-							try:
-								with open(best_fp,'r',encoding='utf-8')as f:context_for_fail=best_fp,f.read()
-							except:pass
-						else:print(f"  [33m[Fallback 2: Partial Scan][0m Tidak ada kandidat file yang mirip ditemukan.")
-					if matched_file is None and context_for_fail is not None:
-						cand_fp,cand_content=context_for_fail;stop_ev_fb,t_fb=_spinner_start(f"Menjalankan Fuzzy Block Matcher untuk blok #{i}/{len(pairs)}...",color='214');cand_result=find_in_content(find_stripped,cand_content,block_label=i);_spinner_stop(stop_ev_fb,t_fb)
-						if cand_result and cand_result[2]=='auto_anchor_confirm':
-							h_idx,t_idx,_=cand_result
-							if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),cand_content.splitlines(),i):cand_result=h_idx,t_idx,'auto_anchor'
-							else:cand_result=None
-						if cand_result and cand_result[2].startswith('head_tail'):
-							if not _confirm_head_tail_skip(cand_result,cand_content,i):cand_result=None
-						if cand_result:matched_file=cand_fp;matched_content=cand_content;match_type=cand_result[2];match_line_no=_line_from_result(cand_result,matched_content);final_match_result=cand_result
+							pilih=int(input().strip());temp_file=os.path.join(SOURCE_ROOT,matches[pilih-1])
+							with open(temp_file,'r',encoding='utf-8')as f:temp_content=f.read()
+							stop_ev_m2,t_m2=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)} di {matches[pilih-1]}...",color='214');result=find_in_content(find_stripped,temp_content,block_label=i);_spinner_stop(stop_ev_m2,t_m2)
+							if result and result[2]=='auto_anchor_confirm':
+								h_idx,t_idx,_=result
+								if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),temp_content.splitlines(),i):result=h_idx,t_idx,'auto_anchor'
+								else:result=None
+							if result and result[2].startswith('head_tail'):
+								if not _confirm_head_tail_skip(result,temp_content,i):result=None
+							if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result
+							else:context_for_fail=temp_file,temp_content
+						except:print(f"  [31m[GAGAL][0m Blok #{i} — Pilihan tidak valid, blok dilewati.");all_ok=False;continue
 					if matched_file is None:
-						print(f"  [GAGAL] Blok #{i} — Kode tidak ditemukan di file manapun.");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m")
-						for pl in find_stripped.splitlines():print(f"          │ {pl}")
-						log_fail_event(i,'not_found_in_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+						if context_for_fail is None and not auto_mode:
+							try:
+								with open(os.path.join(SOURCE_ROOT,filename),'r',encoding='utf-8')as f:context_for_fail=os.path.join(SOURCE_ROOT,filename),f.read()
+							except:pass
+						if context_for_fail is None:
+							stop_ev_p,tp=_spinner_start('Menjalankan Fallback 2: Partial Token Scan (Mencari file yang paling mirip)...',color='129');partial_hits=cari_file_partial(find_stripped,cache=_get_proj_cache());_spinner_stop(stop_ev_p,tp)
+							if partial_hits:
+								best_fp,best_score,best_block,best_rel=partial_hits[0];print(f"  [35m[Fallback 2: Partial Scan][0m Kandidat terdekat: [1;36m{best_rel}[0m [38;5;129m[Token Similarity: {best_score:.0%}][0m")
+								try:
+									with open(best_fp,'r',encoding='utf-8')as f:context_for_fail=best_fp,f.read()
+								except:pass
+							else:print(f"  [33m[Fallback 2: Partial Scan][0m Tidak ada kandidat file yang mirip ditemukan.")
+						if matched_file is None and context_for_fail is not None:
+							cand_fp,cand_content=context_for_fail;stop_ev_fb,t_fb=_spinner_start(f"Menjalankan Fuzzy Block Matcher untuk blok #{i}/{len(pairs)}...",color='214');cand_result=find_in_content(find_stripped,cand_content,block_label=i);_spinner_stop(stop_ev_fb,t_fb)
+							if cand_result and cand_result[2]=='auto_anchor_confirm':
+								h_idx,t_idx,_=cand_result
+								if _confirm_far_anchor(h_idx,t_idx,find_stripped.splitlines(),cand_content.splitlines(),i):cand_result=h_idx,t_idx,'auto_anchor'
+								else:cand_result=None
+							if cand_result and cand_result[2].startswith('head_tail'):
+								if not _confirm_head_tail_skip(cand_result,cand_content,i):cand_result=None
+							if cand_result:matched_file=cand_fp;matched_content=cand_content;match_type=cand_result[2];match_line_no=_line_from_result(cand_result,matched_content);final_match_result=cand_result
+						if matched_file is None:
+							if not auto_mode and not path_ok and context_for_fail is None:
+								new_dir,new_base=_resolve_create_dir(filename)
+								if new_dir is None:print(f"  [31m[BATAL][0m Auto-Create dibatalkan oleh user.");log_fail_event(i,'auto_create_cancelled',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+								new_filepath=os.path.join(new_dir,new_base)
+								if not _is_path_inside_root(new_filepath):
+									print(f"  [31m[DITOLAK][0m Auto-Create dibatalkan — target di luar folder project: [1m{filename}[0m");print(f"  [GAGAL] Blok #{i} — Kode tidak ditemukan di file manapun.")
+									for pl in find_stripped.splitlines():print(f"          │ {pl}")
+									log_fail_event(i,'auto_create_outside_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+								rel_new=os.path.relpath(new_filepath,SOURCE_ROOT);print(f"  [36m[Auto-Create][0m File belum ada di project — akan dibuat baru: [1;36m{rel_new}[0m");matched_file=new_filepath;matched_content='';match_type='new_file';match_line_no=None;final_match_result=0,0,'new_file';find_stripped='';filepath=new_filepath;path_ok=True;content=replace_stripped
+							else:
+								print(f"  [GAGAL] Blok #{i} — Kode tidak ditemukan di file manapun.");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m")
+								for pl in find_stripped.splitlines():print(f"          │ {pl}")
+								log_fail_event(i,'not_found_in_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
 			if match_type.startswith('head_tail'):replace_mode='first'
 			else:
 				count_exact=matched_content.count(find_stripped);count_total=count_exact if count_exact>0 else 1
@@ -1239,6 +1354,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 			elif match_type=='head_tail_fuzzy':_htres=find_head_tail(find_stripped,matched_content);_skip_n=_htres[1]-_htres[0]if _htres else 0;method_label=f" [38;5;208m[Fuzzy 70% Head...Tail, ~{_skip_n} baris][0m"
 			elif match_type=='auto_anchor':method_label=' \x1b[38;5;208m[Smart Auto-Anchor]\x1b[0m'
 			elif match_type=='fuzzy_block':method_label=' \x1b[38;5;214m[Fuzzy Block >80%]\x1b[0m'
+			elif match_type=='new_file':method_label=' \x1b[38;5;46m[File Baru — Auto-Create]\x1b[0m'
 			else:method_label=f" [38;5;244m[{match_type}][0m"
 			rel=os.path.relpath(matched_file,SOURCE_ROOT);line_label=f" [33m(baris {match_line_no})[0m"if match_line_no else'';print(f"  [32m[OK][0m Blok [1m#{i}[0m → [1;36m{rel}[0m{line_label}{method_label}");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m");c_st,c_en=0,0
 			if final_match_result:
@@ -1363,13 +1479,18 @@ def scan_dan_apply(patch_text,dry_run=False):
 	if _self_tool:
 		_ensure_rescue_script();_snap_dir=_snapshot_backup_self(preview_map)
 		if _snap_dir:print(f"  [35m[BACKUP][0m Snapshot fisik dibuat: {os.path.relpath(_snap_dir,SOURCE_ROOT)}")
+	_git_ensure_repo()
 	for(filepath,(orig_content,new_content))in preview_map.items():
 		rel=os.path.relpath(filepath,SOURCE_ROOT)
 		if _self_tool:
 			ok_syntax,syntax_err=_validate_python_syntax(filepath,new_content)
 			if not ok_syntax:print(f"  [31m[DITOLAK][0m {rel} — {syntax_err}");print(f"         [33mFile TIDAK ditulis, isi lama dipertahankan supaya tool tidak rusak.[0m");continue
+		if not _is_path_inside_root(filepath):print(f"  [31m[DITOLAK][0m {rel} — path di luar folder project, TIDAK ditulis.");continue
+		is_new_file=not os.path.exists(filepath);os.makedirs(os.path.dirname(filepath)or SOURCE_ROOT,exist_ok=True)
 		with open(filepath,'w',encoding='utf-8')as f:f.write(new_content)
-		session_files.append({'rel':rel});print(f"  [OK] {rel} — berhasil diperbarui.")
+		session_files.append({'rel':rel})
+		if is_new_file:print(f"  [36m[OK][0m {rel} — file baru berhasil dibuat.")
+		else:print(f"  [OK] {rel} — berhasil diperbarui.")
 	if _confirm_amend_target():print(f"  [35m✎  Lanjut commit sama (amend) — pesan commit lama dipertahankan, judul baru diabaikan[0m");commit_hash,commit_err=_git_amend_session()
 	else:
 		if _AMEND_SESSION['head']:print(f"  [33m[INFO][0m Sesi lanjut-commit tidak berlaku lagi (tercatat: {_AMEND_SESSION["head"]}, HEAD sekarang: {_git_current_head()}) — dibuat commit baru.");_AMEND_SESSION['root']=None;_AMEND_SESSION['head']=None;_save_amend_session()
@@ -1391,6 +1512,12 @@ def scan_dan_apply(patch_text,dry_run=False):
 	if _tanya_lanjut_commit_sama(commit_hash):
 		print(f"  [35m➜  Lanjut tempel patch berikutnya (masih nambal commit yang sama)...[0m");_next_patch=paste_patch(dry_run=dry_run)
 		if _next_patch:scan_dan_apply(_next_patch,dry_run=dry_run);return
+	if CAPROJ_MODE_ON:
+		pilih_export=popup_confirm('💾 SIMPAN SEBAGAI .caproj?',['Mode compress .caproj aktif (toggle Ctrl+Q).','Compress & simpan project ini jadi .caproj','biar tinggal import ke CodeAssist?'],[('y','Simpan .caproj'),('n','Lewati')])
+		if pilih_export=='y':
+			stop_ev_zip,t_zip=_spinner_start('Membungkus project jadi .caproj...',color='36');ok_zip,zip_path,zip_err=_export_caproj(SOURCE_ROOT);_spinner_stop(stop_ev_zip,t_zip)
+			if ok_zip:print(f"  [32m[OK][0m Tersimpan: {zip_path}")
+			else:print(f"  [31m[GAGAL][0m {zip_err}")
 	input('  Tekan Enter untuk kembali ke menu...')
 def _git_dir():return os.path.join(SOURCE_ROOT,'.git')
 def _git_run(args):
@@ -1816,7 +1943,7 @@ def _restore_semua_commit():
 			input('\n  Tekan Enter untuk lanjut...');sys.stdout.write('\x1b[?1049h\x1b[?25l');sys.stdout.flush();_first_draw=True
 		elif k in('ESC','q','Q','0'):break
 	sys.stdout.write('\x1b[?25h');sys.stdout.flush()
-PROMPT_AI='Gunakan format Find & Replace untuk semua perubahan kode.\n\nPENTING:\n\n- Kirim SEMUA perubahan hanya dalam SATU BLOK KODE ("text ... ") agar bisa langsung saya copy sekali.\n- Jangan memecah menjadi beberapa blok kode.\n- Jangan mengirim seluruh file, hanya bagian yang perlu diubah.\n- Jika ada banyak file atau banyak perubahan, gabungkan semuanya di dalam blok kode yang sama.\n- Di baris PALING ATAS (sebelum ":file" pertama), tambahkan SATU baris ":title <judul singkat perubahan>" yang merangkum perubahan pada patch ini (contoh: ":title Perbaiki validasi form login"). Judul ini akan dipakai otomatis sebagai nama commit git.\n\nFormat yang wajib digunakan:\n\n:title Judul singkat perubahan (dipakai sebagai nama commit)\n\n:file path/ke/file.js\n:find\nkode lama yang ada di file (tulis persis seperti aslinya)\n:end_find\n:replace\nkode baru penggantinya\n:end_replace\n\n:file path/ke/file_lain.js\n:find\nkode lama\n:end_find\n:replace\nkode baru\n:end_replace\n\nJika ada beberapa perubahan, lanjutkan langsung di bawahnya di dalam blok kode yang sama.\n\nAturan:\n\n- Bagian ":find" harus berisi kode yang benar-benar ada di file.\n- Jangan mengubah atau menghapus fitur yang tidak berkaitan dengan permintaan.\n- Jika menambahkan kode baru, gunakan ":find" pada bagian sebelum/sesudah lokasi penyisipan agar posisi penambahan jelas.\n- Pertahankan indentasi dan formatting asli file.\n- Jangan memberi penjelasan panjang di antara perubahan. Jika perlu, beri ringkasan singkat sebelum blok kode, lalu langsung tampilkan satu blok kode berisi seluruh Find & Replace.\n\nJika blok ":find" terlalu panjang, gunakan format berikut:\n\n:find\n5 baris pertama dari blok asli\n:skip\n5 baris terakhir dari blok asli\n:end_find\n:replace\nkode pengganti lengkap\n:end_replace\n\nWAJIB: baris ":skip" harus berdiri SENDIRI di baris tersendiri (bukan digabung dengan kode lain), sebagai penanda bahwa ada bagian kode di tengah yang tidak ditulis ulang. Jangan gunakan "..." biasa.\nTool akan mencocokkan dari baris kepala hingga baris ekor, lalu mengganti seluruh blok kode di antaranya — termasuk bagian yang tidak ditulis.\n\nWAJIB DIPATUHI:\n\n- Seluruh output Find & Replace harus berada dalam SATU BLOK KODE.\n- Tidak boleh ada blok kode kedua.\n- Tidak boleh ada potongan Find & Replace di luar blok kode tersebut.'
+PROMPT_AI='Gunakan format Find & Replace untuk semua perubahan kode.\n\nPENTING:\n\n- Kirim SEMUA perubahan hanya dalam SATU BLOK KODE ("text ... ") agar bisa langsung saya copy sekali.\n- Jangan memecah menjadi beberapa blok kode.\n- Jangan mengirim seluruh file, hanya bagian yang perlu diubah.\n- Jika ada banyak file atau banyak perubahan, gabungkan semuanya di dalam blok kode yang sama.\n- Di baris PALING ATAS (sebelum ":file" pertama), tambahkan SATU baris ":title <judul singkat perubahan>" yang merangkum perubahan pada patch ini.\n\nFormat untuk MENGEDIT File (Wajib digunakan):\n\n:title Judul singkat perubahan (dipakai sebagai nama commit)\n\n:file path/ke/file.js\n:find\nkode lama yang ada di file (tulis persis seperti aslinya)\n:end_find\n:replace\nkode baru penggantinya\n:end_replace\n\nFormat untuk MEMBUAT File Baru (Gunakan :new_file):\n\n:file path/ke/NewFile.js\n:new_file\n:replace\nseluruh isi kode file baru\n:end_replace\n\nJika file benar-benar baru, gunakan ":new_file". Jangan mengisi ":find" dengan kode palsu, placeholder, atau potongan kode generik.\n\nAturan Tambahan:\n\n- Bagian ":find" harus berisi kode yang benar-benar ada di file.\n- Jika menambahkan kode baru di file yang sudah ada, gunakan ":find" pada bagian sebelum/sesudah lokasi penyisipan agar posisi penambahan jelas.\n- Pertahankan indentasi dan formatting asli file.\n- Jangan memberi penjelasan panjang di antara perubahan.\n\nJika blok ":find" terlalu panjang, gunakan format head...tail dengan penanda skip:\n\n:find\n5 baris pertama dari blok asli\n:skip\n5 baris terakhir dari blok asli\n:end_find\n:replace\nkode pengganti lengkap\n:end_replace\n\nWAJIB: baris ":skip" harus berdiri SENDIRI di baris tersendiri. Jangan gunakan "..." biasa.\n\nWAJIB DIPATUHI:\n- Seluruh output Find & Replace harus berada dalam SATU BLOK KODE.\n- Tidak boleh ada blok kode kedua.\n- Tidak boleh ada potongan Find & Replace di luar blok kode tersebut.'
 def test_api_key_validity(provider,model,key,local_url_override=None):
 	cfg=load_ai_config();local_url=cfg.get('local_url','').strip();PROVIDER_URLS={'openai':'https://api.openai.com/v1/chat/completions','groq':'https://api.groq.com/openai/v1/chat/completions','openrouter':'https://openrouter.ai/api/v1/chat/completions','local':local_url if local_url else'http://127.0.0.1:4891/v1/chat/completions'};api_url=PROVIDER_URLS.get(provider,PROVIDER_URLS['openai'])
 	if provider=='local'and(local_url_override or'').strip():api_url=local_url_override.strip()
@@ -2234,7 +2361,34 @@ def setup_git_identity():
 			if val:GIT_USER_NAME=val;save_git_identity();msg='\x1b[32m✅ Tersimpan\x1b[0m'
 			sys.stdout.write('\x1b[?25l')
 	save_git_identity();print(f"\n{M}  [32m[OK][0m Identitas git berhasil disimpan.");input(f"\n{M}  Tekan Enter untuk kembali ke menu...")
-MENU_SECTIONS=[('OPERASI PATCH',[('1','Terapkan Patch','Eksekusi patch dari blok :find/:replace ke file target'),('2','Cari & Ganti','Cari cuplikan kode secara manual, lalu ganti isinya'),('3','Cek Saja','Simulasikan patch tanpa mengubah file (dry-run)')]),('MANAJEMEN',[('4','Pulihkan Sesi','Kembalikan 1 file atau seluruh commit git'),('5','Cek Sintaks','Validasi sintaks file .py sebelum diterapkan'),('6','Ubah Direktori','Pindahkan direktori kerja aktif ke folder lain')]),('UTILITAS',[('7','Prompt AI','Salin instruksi format patch untuk asisten AI'),('8','AI Setup','Atur kredensial API key OpenAI'),('9','Threshold','Atur ambang toleransi pencocokan auto-anchor & partial scan'),('g','Identitas Git','Kelola nama & email penulis commit git'),('0','Keluar','Keluar dari aplikasi FR Tool')])]
+def kelola_folder_exclude():
+	msg=''
+	while True:
+		tsize=_term_size();term_cols,term_lines=tsize.columns,tsize.lines
+		if term_cols<MIN_TERM_COLS or term_lines<MIN_TERM_LINES:warn=['','  \x1b[1;38;5;196m⚠  Layar terlalu kecil / zoom terlalu dalam\x1b[0m',f"  [38;5;{C_GRAY}mMinimal {MIN_TERM_COLS} kolom x {MIN_TERM_LINES} baris[0m",f"  [38;5;{C_GRAY}mSaat ini   : {term_cols} kolom x {term_lines} baris[0m",'',f"  [38;5;{C_DGRAY}mPerbesar (zoom out) tampilan terminal, lalu tekan tombol apa saja...[0m",''];sys.stdout.write('\x1b[?2026h\x1b[2J\x1b[3J\x1b[H'+'\n'.join(line+'\x1b[K'for line in warn)+'\x1b[0J\x1b[?2026l');sys.stdout.flush();get_key();continue
+		clear();M=header('Kelola Exclude');entries=_read_frignore_raw();print(f"{M}  [1mBAWAAN TOOL (selalu di-skip, tidak bisa dihapus):[0m");print(f"{M}  [38;5;{C_GRAY}m{", ".join(sorted(BASE_IGNORE_DIRS))}[0m");print();print(f"{M}  [1mTAMBAHAN KAMU (disimpan di .frignore):[0m")
+		if entries:
+			for(i,e)in enumerate(entries,1):jenis='ekstensi'if e.startswith('*.')else'folder';print(f"{M}  {i}. [36m{e}[0m [38;5;{C_DGRAY}m({jenis})[0m")
+		else:print(f"{M}  [38;5;{C_DGRAY}m(belum ada folder/ekstensi tambahan)[0m")
+		print()
+		if msg:print(f"{M}  {msg}\n");msg=''
+		print(f"{M}  [38;5;{C_VIOLET}m[A] Tambah   [D] Hapus   [Q] Kembali[0m");sys.stdout.write(f"{M}  [1;32m❯ [0m");sys.stdout.flush();k=get_key()
+		if k.lower()=='q'or k=='ESC':break
+		elif k=='RESIZE':continue
+		elif k.lower()=='a':
+			sys.stdout.write('\x1b[?25h');val=input(f"\r{M}  Nama folder (mis. auth_info) atau ekstensi (mis. *.bak): ").strip();sys.stdout.write('\x1b[?25l')
+			if val:
+				norm=val if val.startswith('*.')else val.strip('/')
+				if norm in entries:msg='\x1b[33m⚠ Sudah ada di daftar\x1b[0m'
+				else:entries.append(norm);_write_frignore_raw(entries);load_frignore();msg=f"[32m✅ '{norm}' ditambahkan ke daftar exclude[0m"
+		elif k.lower()=='d':
+			if not entries:msg='\x1b[33m⚠ Belum ada yang bisa dihapus\x1b[0m'
+			else:
+				sys.stdout.write('\x1b[?25h');val=input(f"\r{M}  Nomor yang mau dihapus (1-{len(entries)}): ").strip();sys.stdout.write('\x1b[?25l')
+				if val.isdigit()and 1<=int(val)<=len(entries):removed=entries.pop(int(val)-1);_write_frignore_raw(entries);load_frignore();msg=f"[32m✅ '{removed}' dihapus dari daftar exclude[0m"
+				else:msg='\x1b[31m✗ Nomor tidak valid\x1b[0m'
+	input(f"\n{M}  Tekan Enter untuk kembali ke menu...")
+MENU_SECTIONS=[('OPERASI PATCH',[('1','Terapkan Patch','Eksekusi patch dari blok :find/:replace ke file target'),('2','Cari & Ganti','Cari cuplikan kode secara manual, lalu ganti isinya'),('3','Cek Saja','Simulasikan patch tanpa mengubah file (dry-run)')]),('MANAJEMEN',[('4','Pulihkan Sesi','Kembalikan 1 file atau seluruh commit git'),('5','Cek Sintaks','Validasi sintaks file .py sebelum diterapkan'),('6','Ubah Direktori','Pindahkan direktori kerja aktif ke folder lain'),('e','Kelola Exclude','Tambah/hapus folder atau ekstensi yang di-skip saat patch')]),('UTILITAS',[('7','Prompt AI','Salin instruksi format patch untuk asisten AI'),('8','AI Setup','Atur kredensial API key OpenAI'),('9','Threshold','Atur ambang toleransi pencocokan auto-anchor & partial scan'),('g','Identitas Git','Kelola nama & email penulis commit git'),('0','Keluar','Keluar dari aplikasi FR Tool')])]
 def get_key(animate=False):
 	global _resize_pending;fd=sys.stdin.fileno();old_settings=termios.tcgetattr(fd)
 	try:
@@ -2288,7 +2442,7 @@ def draw_menu(selected_idx):
 	if term_cols<MIN_TERM_COLS or term_lines<MIN_TERM_LINES:warn=['','  \x1b[1;38;5;196m⚠  Layar terlalu kecil / zoom terlalu dalam\x1b[0m',f"  [38;5;{C_GRAY}mMinimal {MIN_TERM_COLS} kolom x {MIN_TERM_LINES} baris[0m",f"  [38;5;{C_GRAY}mSaat ini   : {term_cols} kolom x {term_lines} baris[0m",'',f"  [38;5;{C_DGRAY}mPerbesar (zoom out) tampilan terminal, lalu tekan tombol apa saja...[0m",''];sys.stdout.write('\x1b[?2026h\x1b[2J\x1b[3J\x1b[H'+'\n'.join(line+'\x1b[K'for line in warn)+'\x1b[0J\x1b[?2026l');sys.stdout.flush();return
 	compact=term_lines<30;_zoom_factor=term_cols/8e1;W=max(24,min(term_cols-2,int(term_cols*.95)));div_w=W-2;max_path_len=max(5,div_w-15);root_short=SOURCE_ROOT if len(SOURCE_ROOT)<=max_path_len else'…'+SOURCE_ROOT[-(max_path_len-1):];buf=[];buf.append('');two_col=div_w>=56;left_w=max(18,int(div_w*.4))if two_col else div_w;right_w=div_w-left_w-3 if two_col else 0
 	if two_col and right_w<16:two_col=False;left_w,right_w=div_w,0
-	mascot_lines=_render_mascot_frame(_get_mascot_frame(),RGB_TERRACOTTA_DARK,RGB_TERRACOTTA_LIGHT,RGB_DELTA_LIGHT);left_cells=[_pad_cell(l,left_w,center=True)for l in mascot_lines];left_cells.append(_pad_cell('',left_w));_lp_len=max(6,left_w-10);_dir_disp=root_short if len(root_short)<=_lp_len else'…'+root_short[-(_lp_len-1):];left_cells.append(_pad_cell(f"[38;5;{C_DGRAY}m{VERSION} · By Reza[0m",left_w,center=True));left_cells.append(_pad_cell(f"[38;5;{C_GRAY}mDIR [0m{_animated_dir_text(_dir_disp)}",left_w,center=True))
+	mascot_lines=_render_mascot_frame(_get_mascot_frame(),RGB_TERRACOTTA_DARK,RGB_TERRACOTTA_LIGHT,RGB_DELTA_LIGHT);left_cells=[_pad_cell(l,left_w,center=True)for l in mascot_lines];left_cells.append(_pad_cell('',left_w));_lp_len=max(6,left_w-10);_dir_disp=root_short if len(root_short)<=_lp_len else'…'+root_short[-(_lp_len-1):];left_cells.append(_pad_cell(f"[38;5;{C_DGRAY}m{VERSION} · By Reza[0m",left_w,center=True));left_cells.append(_pad_cell(f"[38;5;{C_GRAY}mDIR [0m{_animated_dir_text(_dir_disp)}",left_w,center=True));_caproj_label=f"[1;38;5;46m📦 .caproj: ON[0m"if CAPROJ_MODE_ON else f"[38;5;{C_DGRAY}m📦 .caproj: OFF · Ctrl+Q[0m";left_cells.append(_pad_cell(_caproj_label,left_w,center=True))
 	if two_col:
 		_tip_l1,_tip_l2=_get_dynamic_tip();_tip_l1=_tip_l1 if len(_tip_l1)<=right_w else _tip_l1[:max(0,right_w-1)]+'…';_tip_l2=_tip_l2 if len(_tip_l2)<=right_w else _tip_l2[:max(0,right_w-1)]+'…';right_cells=[_pad_cell(f"[1;38;5;{C_BORDER}mTips[0m",right_w),_pad_cell(f"[38;5;{C_GRAY}m{_tip_l1}[0m",right_w),_pad_cell(f"[38;5;{C_GRAY}m{_tip_l2}[0m",right_w),_pad_cell(f"[38;5;{C_DGRAY}m{"─"*right_w}[0m",right_w),_pad_cell(f"[1;38;5;{C_BORDER}mCommit Terakhir[0m",right_w)];_act=_get_recent_activity()
 		for _act_line in _wrap_plain_text(_act,right_w):right_cells.append(_pad_cell(f"[38;5;{C_GRAY}m{_act_line}[0m",right_w))
@@ -2466,6 +2620,7 @@ def main():
 			elif tombol=='DOWN':selected_idx=(selected_idx+1)%len(flat_keys);continue
 			elif tombol=='ENTER':pilihan=flat_keys[selected_idx]
 			elif tombol in flat_keys:pilihan=tombol;selected_idx=flat_keys.index(tombol)
+			elif tombol=='\x11':global CAPROJ_MODE_ON;CAPROJ_MODE_ON=not CAPROJ_MODE_ON;continue
 			else:continue
 			global _GLOBAL_TIMER_START;_GLOBAL_TIMER_START=.0
 			if pilihan=='0':sys.stdout.write('\x1b[?25h');sys.stdout.flush();clear();break
@@ -2481,6 +2636,7 @@ def main():
 			elif pilihan=='4':restore_backup()
 			elif pilihan=='5':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();cek_sintaks_menu();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
 			elif pilihan=='6':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();pilih_folder();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
+			elif pilihan=='e':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();kelola_folder_exclude();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
 			elif pilihan=='7':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();copy_prompt_ai();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
 			elif pilihan=='8':setup_ai()
 			elif pilihan=='9':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();setup_threshold();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
