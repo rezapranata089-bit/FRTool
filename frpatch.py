@@ -725,6 +725,10 @@ def copy_to_clipboard(text):
 		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
 	if os.path.isdir('/data/data/com.termux'):print('\n  [INFO] Untuk mengaktifkan auto-copy di Termux:');print('         1. Install Termux:API dari F-Droid atau Google Play');print('         2. Jalankan: pkg install termux-api');print('         Setelah itu, clipboard akan bekerja otomatis.\n')
 	return False
+def _detect_non_termux_android_app():
+	_paths=os.environ.get('HOME','')+os.environ.get('PREFIX','')
+	if'com.termux'in _paths:return
+	_m=re.search('/data/(?:data|user/\\d+)/([\\w.]+)/',_paths);return _m.group(1)if _m else None
 def read_from_clipboard():
 	cmds=[['termux-clipboard-get'],['xclip','-selection','clipboard','-o'],['xsel','--clipboard','--output'],['powershell.exe','-command','Get-Clipboard'],['pbpaste']]
 	for cmd in cmds:
@@ -732,6 +736,8 @@ def read_from_clipboard():
 			r=subprocess.run(cmd,timeout=5,capture_output=True)
 			if r.returncode==0:return r.stdout.decode('utf-8',errors='replace')
 		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
+	_app_pkg=_detect_non_termux_android_app()
+	if _app_pkg:print(f"\n  [INFO] Auto-paste clipboard tidak tersedia di aplikasi terminal ini ({_app_pkg}).");print('         Fitur ini hanya bekerja di Termux + paket termux-api (pkg install termux-api).');print('         Silakan tempel (paste) kode patch secara manual di bawah.\n')
 def load_ai_config():
 	if os.path.exists(AI_CONFIG_PATH):
 		try:
