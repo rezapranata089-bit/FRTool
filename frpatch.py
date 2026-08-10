@@ -564,15 +564,30 @@ def replace_in_content(content,find_text,replace_text,mode='first'):
 				else:break
 			indented_replace=_reindent_relative(replace_text,indent);new_lines=content_lines[:best_i]+[indented_replace+'\n']+content_lines[best_end:];return''.join(new_lines),1
 	return content,0
+def _frcache_path(root):return os.path.join(root,'.patch_backups','project_cache.json')
+def _load_disk_cache(root):
+	path=_frcache_path(root)
+	if not os.path.exists(path):return{}
+	try:
+		with open(path,'r',encoding='utf-8')as f:raw=json.load(f)
+		if not isinstance(raw,dict)or raw.get('_v')!=1:return{}
+		return raw.get('files',{})
+	except Exception:return{}
+def _save_disk_cache(root,disk_entries):
+	path=_frcache_path(root)
+	try:
+		os.makedirs(os.path.dirname(path),exist_ok=True)
+		with open(path,'w',encoding='utf-8')as f:json.dump({'_v':1,'files':disk_entries},f)
+	except Exception:pass
 def _build_project_cache(root=None):
 	import re as _re2,sys
 	if root is None:root=SOURCE_ROOT
-	total_files=0
+	old_disk_cache=_load_disk_cache(root);new_disk_cache={};total_files=0
 	for(dirpath,dirs,files)in os.walk(root):
 		dirs[:]=[d for d in dirs if d not in IGNORE_DIRS]
 		for fname in files:
 			if os.path.splitext(fname)[1].lower()not in IGNORE_EXTS:total_files+=1
-	import time;start_index_time=time.time();entries=[];processed=0;sys.stdout.write('\x1b[?25l')
+	import time;start_index_time=time.time();entries=[];processed=0;reused=0;sys.stdout.write('\x1b[?25l')
 	for(dirpath,dirs,files)in os.walk(root):
 		dirs[:]=[d for d in dirs if d not in IGNORE_DIRS]
 		for fname in files:
@@ -580,12 +595,18 @@ def _build_project_cache(root=None):
 			if ext.lower()in IGNORE_EXTS:continue
 			full=os.path.join(dirpath,fname);processed+=1;global _GLOBAL_TIMER_START
 			if _GLOBAL_TIMER_START==.0:_GLOBAL_TIMER_START=start_index_time
-			elapsed_idx=time.time()-_GLOBAL_TIMER_START;pct=processed/max(1,total_files);bar_len=25;filled=int(bar_len*pct);bar='█'*filled+'░'*(bar_len-filled);sys.stdout.write(f"\r  [1;38;5;129m[INDEXING][0m Membangun index project... {bar} {processed}/{total_files} [K\n");sys.stdout.write(f"\r      [38;5;244m↳ ⏱  {elapsed_idx:.1f}s[0m[K");sys.stdout.write('\x1b[1A');sys.stdout.flush()
-			try:
-				with open(full,'r',encoding='utf-8')as f:content=f.read()
-			except(PermissionError,IsADirectoryError,UnicodeDecodeError):continue
-			file_toks=frozenset(t for t in _re2.split('[\\s{};,()\\"\\\'\\[\\]=:.<>!&|@]+',content)if len(t)>3);entries.append({'full':full,'rel':os.path.relpath(full,root),'content':content,'norm':normalize(content),'toks':file_toks})
-	sys.stdout.write('\r\x1b[K\n\r\x1b[K\x1b[1A\x1b[?25h');sys.stdout.flush();return entries
+			elapsed_idx=time.time()-_GLOBAL_TIMER_START;pct=processed/max(1,total_files);bar_len=25;filled=int(bar_len*pct);bar='█'*filled+'░'*(bar_len-filled);sys.stdout.write(f"\r  [1;38;5;129m[INDEXING][0m Membangun index project... {bar} {processed}/{total_files} [K\n");sys.stdout.write(f"\r      [38;5;244m↳ ⏱  {elapsed_idx:.1f}s [38;5;244m(cache: {reused})[0m[K");sys.stdout.write('\x1b[1A');sys.stdout.flush();rel=os.path.relpath(full,root)
+			try:st=os.stat(full)
+			except OSError:continue
+			cached=old_disk_cache.get(rel)
+			if cached and cached.get('mtime')==st.st_mtime and cached.get('size')==st.st_size:content=cached['content'];norm=cached['norm'];file_toks=frozenset(cached['toks']);reused+=1
+			else:
+				try:
+					with open(full,'r',encoding='utf-8')as f:content=f.read()
+				except(PermissionError,IsADirectoryError,UnicodeDecodeError):continue
+				norm=normalize(content);file_toks=frozenset(t for t in _re2.split('[\\s{};,()\\"\\\'\\[\\]=:.<>!&|@]+',content)if len(t)>3)
+			new_disk_cache[rel]={'mtime':st.st_mtime,'size':st.st_size,'content':content,'norm':norm,'toks':list(file_toks)};entries.append({'full':full,'rel':rel,'content':content,'norm':norm,'toks':file_toks})
+	sys.stdout.write('\r\x1b[K\n\r\x1b[K\x1b[1A\x1b[?25h');sys.stdout.flush();_save_disk_cache(root,new_disk_cache);return entries
 def cari_file_berisi_kode(find_text,root=None,cache=None):
 	if root is None:root=SOURCE_ROOT
 	hasil=[];has_ell=_has_ellipsis(find_text)
@@ -704,6 +725,13 @@ def copy_to_clipboard(text):
 		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
 	if os.path.isdir('/data/data/com.termux'):print('\n  [INFO] Untuk mengaktifkan auto-copy di Termux:');print('         1. Install Termux:API dari F-Droid atau Google Play');print('         2. Jalankan: pkg install termux-api');print('         Setelah itu, clipboard akan bekerja otomatis.\n')
 	return False
+def read_from_clipboard():
+	cmds=[['termux-clipboard-get'],['xclip','-selection','clipboard','-o'],['xsel','--clipboard','--output'],['powershell.exe','-command','Get-Clipboard'],['pbpaste']]
+	for cmd in cmds:
+		try:
+			r=subprocess.run(cmd,timeout=5,capture_output=True)
+			if r.returncode==0:return r.stdout.decode('utf-8',errors='replace')
+		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
 def load_ai_config():
 	if os.path.exists(AI_CONFIG_PATH):
 		try:
@@ -1104,6 +1132,15 @@ def paste_patch(dry_run=False):
 	for line in info_lines:_pp_buf.append(_c(line))
 	_pp_buf.append('');_pp_buf.append(_c('\x1b[1;38;5;215m↓ SILAKAN PASTE (TEMPEL) KODE PATCH DI BAWAH INI ↓\x1b[0m'));_pp_sep_w=max(20,min(_pp_term_cols-2,74));_pp_buf.append(_c(f"[38;5;208m{"─"*_pp_sep_w}[0m"))
 	for _pp_line in _pp_buf:print(_pp_line)
+	_pp_clip=read_from_clipboard();_pp_clip_markers=':file',':find',':new_file','===FIND==='
+	if _pp_clip and _pp_clip.strip()and any(m in _pp_clip for m in _pp_clip_markers):
+		_pp_clip_lines=_pp_clip.strip().splitlines();_pp_preview_n=min(4,len(_pp_clip_lines));print(_c('\x1b[38;5;46m✔ Terdeteksi isi clipboard yang mirip format patch:\x1b[0m'))
+		for _pl in _pp_clip_lines[:_pp_preview_n]:print(_c(f"[38;5;244m│ {_pl[:max(10,_pp_term_cols-6)]}[0m"))
+		if len(_pp_clip_lines)>_pp_preview_n:print(_c(f"[38;5;244m│ ... ({len(_pp_clip_lines)-_pp_preview_n} baris lagi)[0m"))
+		print(_c('\x1b[1;38;5;215mPakai isi clipboard ini? [Y] Ya   [n] Ketik/tempel manual\x1b[0m'))
+		try:_pp_ans=input().strip().lower()
+		except(EOFError,KeyboardInterrupt):return
+		if _pp_ans in('','y','ya'):return _pp_clip
 	lines=[];empty_count=0
 	while True:
 		try:line=input()
@@ -1231,6 +1268,17 @@ def _resolve_create_dir(filename):
 		elif k=='DOWN':sel=(sel+1)%len(cands)
 		elif k=='ENTER':sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return os.path.join(SOURCE_ROOT,cands[sel]),base
 		elif k in('ESC','q','Q','0'):sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return None,base
+def _resolve_path_by_suffix(filename,root):
+	target_parts=[p for p in filename.replace('\\','/').split('/')if p]
+	if not target_parts:return[]
+	base=target_parts[-1];hasil=[]
+	for(dirpath,dirs,files)in os.walk(root):
+		dirs[:]=[d for d in dirs if d not in IGNORE_DIRS]
+		for fname in files:
+			if fname!=base:continue
+			full=os.path.join(dirpath,fname);rel=os.path.relpath(full,root);rel_parts=rel.replace('\\','/').split('/')
+			if rel_parts[-len(target_parts):]==target_parts:hasil.append(rel)
+	return hasil
 def scan_dan_apply(patch_text,dry_run=False):
 	import time;global _GLOBAL_TIMER_START;start_time=time.time();_GLOBAL_TIMER_START=start_time;clear();_sa_term_cols=_term_size().columns;_sa_sep_w=max(20,min(_sa_term_cols-2,int(_sa_term_cols*.95)));file_patches=parse_patch(patch_text);_patch_title=_extract_patch_title(patch_text)
 	if not file_patches:print('[GAGAL] Tidak ada blok patch yang valid ditemukan.');print();print('Pastikan patch menggunakan salah satu format berikut:');print('  :find / :replace / :end');print('  atau format lama: ===FIND=== ===REPLACE=== ===END===');input('\nTekan Enter untuk kembali ke menu...');return
@@ -1241,6 +1289,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 	def _get_proj_cache():
 		if _proj_cache_ref[0]is None:_proj_cache_ref[0]=_build_project_cache(SOURCE_ROOT)
 		return _proj_cache_ref[0]
+	_claimed_matches={}
 	for(filename,pairs)in file_patches.items():
 		auto_mode=filename=='__AUTO__';print(f"📄 {"[Deteksi otomatis file]"if auto_mode else filename}")
 		if not auto_mode and not _is_path_inside_root(os.path.join(SOURCE_ROOT,filename)):print(f"  [31m[DITOLAK][0m Path [1m{filename}[0m mengarah KELUAR folder project — dianggap tidak valid, semua blok di file ini dilewati.");log_fail_event(0,'path_outside_project',filename);all_ok=False;continue
@@ -1249,7 +1298,13 @@ def scan_dan_apply(patch_text,dry_run=False):
 			filepath=os.path.join(SOURCE_ROOT,filename);path_ok=os.path.exists(filepath)
 			if path_ok:
 				with open(filepath,'r',encoding='utf-8')as f:content=f.read()
-			else:print(f"  [INFO] Path tidak ditemukan, mencari di seluruh direktori...")
+			else:
+				suffix_hits=_resolve_path_by_suffix(filename,SOURCE_ROOT)
+				if len(suffix_hits)==1:
+					filepath=os.path.join(SOURCE_ROOT,suffix_hits[0])
+					with open(filepath,'r',encoding='utf-8')as f:content=f.read()
+					path_ok=True;_claimed_matches[suffix_hits[0]]=filename;print(f"  [36m[Auto-Resolve][0m Path header tidak persis, dicocokkan via nama file ke: [1m{suffix_hits[0]}[0m")
+				else:print(f"  [INFO] Path tidak ditemukan, mencari di seluruh direktori...")
 		total_pairs_in_file=len(pairs)
 		for(i,(find,replace))in enumerate(pairs,1):
 			print(f"  [38;5;244m— Memproses blok {i}/{total_pairs_in_file} —[0m");find_stripped=find.strip('\n');replace_stripped=replace.strip('\n');matched_file=None;match_type='exact';match_line_no=None;replace_mode='first';matched_content='';context_for_fail=None;final_match_result=None
@@ -1276,7 +1331,8 @@ def scan_dan_apply(patch_text,dry_run=False):
 					if result:_,_,match_type=result;match_line_no=_line_from_result(result,content);matched_file=filepath;matched_content=content;final_match_result=result
 					else:context_for_fail=filepath,content;print(f"  [33m[Fallback 1: Directory Scan][0m Blok #{i} tidak cocok di file target, memindai seluruh folder...")
 				if matched_file is None:
-					stop_ev_sc,t=_spinner_start(f"Menjalankan Fallback 1 (Exact/Fuzzy/Regex) untuk blok #{i}/{len(pairs)}...");matches=cari_file_berisi_kode(find_stripped,cache=_get_proj_cache());_spinner_stop(stop_ev_sc,t)
+					stop_ev_sc,t=_spinner_start(f"Menjalankan Fallback 1 (Exact/Fuzzy/Regex) untuk blok #{i}/{len(pairs)}...");raw_matches=cari_file_berisi_kode(find_stripped,cache=_get_proj_cache());_spinner_stop(stop_ev_sc,t);matches=[m for m in raw_matches if _claimed_matches.get(m,filename)==filename]
+					if not matches:matches=raw_matches
 					if len(matches)==1:
 						temp_file=os.path.join(SOURCE_ROOT,matches[0])
 						with open(temp_file,'r',encoding='utf-8')as f:temp_content=f.read()
@@ -1287,14 +1343,33 @@ def scan_dan_apply(patch_text,dry_run=False):
 							else:result=None
 						if result and result[2].startswith('head_tail'):
 							if not _confirm_head_tail_skip(result,temp_content,i):result=None
-						if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result
+						if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result;_claimed_matches[matches[0]]=filename
 						else:context_for_fail=temp_file,temp_content
 					elif len(matches)>1:
 						print(f"  [33m[PILIHAN][0m Blok #{i} ditemukan di [1m{len(matches)}[0m file berbeda:")
-						for(j,m)in enumerate(matches,1):print(f"      [36m[{j}][0m {m}")
-						print('      Masukkan nomor file yang dituju: ',end='')
+						for(j,m)in enumerate(matches,1):tag=' \x1b[38;5;244m(sudah dipakai utk file lain)\x1b[0m'if m in _claimed_matches else'';print(f"      [36m[{j}][0m {m}{tag}")
+						print(f"      [36m[A][0m SEMUA — terapkan blok ini ke file yang kodenya [1mbenar-benar identik[0m (exact match saja)");print('      Masukkan nomor file yang dituju (atau A untuk semua): ',end='')
 						try:
-							pilih=int(input().strip());temp_file=os.path.join(SOURCE_ROOT,matches[pilih-1])
+							pilih_raw=input().strip()
+							if pilih_raw.lower()in('a','semua','all'):
+								ga_matched,ga_skipped=[],[]
+								for m in matches:
+									temp_file=os.path.join(SOURCE_ROOT,m)
+									try:
+										with open(temp_file,'r',encoding='utf-8')as f:temp_content=f.read()
+									except Exception:ga_skipped.append((m,'gagal dibaca'));continue
+									if find_stripped not in temp_content:ga_skipped.append((m,'kode tidak identik'));continue
+									ga_matched.append((m,temp_file,temp_content))
+								print(f"\n  [36m[GANTI SEMUA][0m Blok #{i} — hasil deteksi exact match:")
+								for(_gm,_gf,_gc)in ga_matched:print(f"      [32m[✓][0m {_gm}")
+								for(_gm,_alasan)in ga_skipped:print(f"      [33m[✗][0m {_gm} [38;5;244m({_alasan})[0m")
+								if not ga_matched:print(f"  [31m[GAGAL][0m Tidak ada file dengan exact match — blok #{i} dilewati.");all_ok=False;continue
+								print(f"  [1mTerapkan ke [38;5;46m{len(ga_matched)}[0m[1m file di atas? [Y/n]: [0m",end='');ga_confirm=input().strip().lower()
+								if ga_confirm not in('','y','ya'):print(f"  [33m[BATAL][0m Ganti semua dibatalkan — blok #{i} dilewati.");all_ok=False;continue
+								applied_n=0
+								for(_gm,_gf,_gc)in ga_matched:ga_st=_gc.find(find_stripped);ga_en=ga_st+len(find_stripped);plan.append((_gf,find_stripped,replace_stripped,'first',_gc,'exact',ga_st,ga_en));_claimed_matches[_gm]=filename;applied_n+=1
+								print(f"  [36m[GANTI SEMUA][0m Blok #{i} → [1m{applied_n}[0m file diterapkan.");continue
+							pilih=int(pilih_raw);temp_file=os.path.join(SOURCE_ROOT,matches[pilih-1])
 							with open(temp_file,'r',encoding='utf-8')as f:temp_content=f.read()
 							stop_ev_m2,t_m2=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)} di {matches[pilih-1]}...",color='214');result=find_in_content(find_stripped,temp_content,block_label=i);_spinner_stop(stop_ev_m2,t_m2)
 							if result and result[2]=='auto_anchor_confirm':
@@ -1303,7 +1378,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 								else:result=None
 							if result and result[2].startswith('head_tail'):
 								if not _confirm_head_tail_skip(result,temp_content,i):result=None
-							if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result
+							if result:matched_file=temp_file;matched_content=temp_content;match_type=result[2];match_line_no=_line_from_result(result,matched_content);final_match_result=result;_claimed_matches[matches[pilih-1]]=filename
 							else:context_for_fail=temp_file,temp_content
 						except:print(f"  [31m[GAGAL][0m Blok #{i} — Pilihan tidak valid, blok dilewati.");all_ok=False;continue
 					if matched_file is None:
