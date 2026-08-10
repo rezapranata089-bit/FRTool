@@ -725,13 +725,6 @@ def copy_to_clipboard(text):
 		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
 	if os.path.isdir('/data/data/com.termux'):print('\n  [INFO] Untuk mengaktifkan auto-copy di Termux:');print('         1. Install Termux:API dari F-Droid atau Google Play');print('         2. Jalankan: pkg install termux-api');print('         Setelah itu, clipboard akan bekerja otomatis.\n')
 	return False
-def read_from_clipboard():
-	cmds=[['termux-clipboard-get'],['xclip','-selection','clipboard','-o'],['xsel','--clipboard','--output'],['powershell.exe','-command','Get-Clipboard'],['pbpaste']]
-	for cmd in cmds:
-		try:
-			r=subprocess.run(cmd,timeout=5,capture_output=True)
-			if r.returncode==0:return r.stdout.decode('utf-8',errors='replace')
-		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
 def load_ai_config():
 	if os.path.exists(AI_CONFIG_PATH):
 		try:
@@ -1128,16 +1121,24 @@ def paste_patch(dry_run=False):
 		for l in left_box:_pp_buf.append(_c(l))
 		_pp_buf.append('')
 		for r in right_box:_pp_buf.append(_c(r))
-	_pp_buf.append('');info_lines=['\x1b[38;5;208m✎\x1b[0m Tambahkan \x1b[1;38;5;215m":title <judul>"\x1b[0m di baris paling atas patch agar jadi nama commit.','\x1b[38;5;244mFormat lama didukung:\x1b[0m \x1b[38;5;215m:replace/:end\x1b[0m dan \x1b[38;5;215m===FIND===/===REPLACE===\x1b[0m','\x1b[38;5;244mℹ Ketik DONE setelah selesai. Ketik Q atau Enter 2x untuk batal\x1b[0m']
+	_pp_buf.append('');info_lines=['\x1b[38;5;208m✎\x1b[0m Tambahkan \x1b[1;38;5;215m":title <judul>"\x1b[0m di baris paling atas patch agar jadi nama commit.','\x1b[38;5;244mFormat lama didukung:\x1b[0m \x1b[38;5;215m:replace/:end\x1b[0m dan \x1b[38;5;215m===FIND===/===REPLACE===\x1b[0m','\x1b[38;5;244mℹ Ketik DONE setelah selesai. Ketik Q atau Enter 2x untuk batal\x1b[0m','\x1b[1;38;5;46m✨ KETIK :clip UNTUK PASTE DARI CLIPBOARD (ANTI-LAG UNTUK KODE RIBUAN BARIS)\x1b[0m']
 	for line in info_lines:_pp_buf.append(_c(line))
 	_pp_buf.append('');_pp_buf.append(_c('\x1b[1;38;5;215m↓ SILAKAN PASTE (TEMPEL) KODE PATCH DI BAWAH INI ↓\x1b[0m'));_pp_sep_w=max(20,min(_pp_term_cols-2,74));_pp_buf.append(_c(f"[38;5;208m{"─"*_pp_sep_w}[0m"))
 	for _pp_line in _pp_buf:print(_pp_line)
-	_pp_clip=read_from_clipboard();_pp_clip_markers=':file',':find',':new_file','===FIND===';_pp_clip_valid=bool(_pp_clip and _pp_clip.strip()and any(m in _pp_clip for m in _pp_clip_markers));lines=[];empty_count=0
+	lines=[];empty_count=0
 	while True:
-		try:line=input()
+		try:
+			line=sys.stdin.readline()
+			if not line:break
+			line=line.strip('\n')
 		except(EOFError,KeyboardInterrupt):return
 		stripped=line.strip()
-		if not lines and stripped==''and _pp_clip_valid:return _pp_clip
+		if stripped==':clip':
+			try:
+				r=subprocess.run(['termux-clipboard-get'],capture_output=True,text=True,timeout=5)
+				if r.returncode==0 and r.stdout:lines.extend(r.stdout.splitlines());print(f"  [32m[+] Berhasil mengambil {len(r.stdout.splitlines())} baris dari clipboard.[0m");empty_count=0;continue
+			except Exception:pass
+			print('  \x1b[31m[!] Gagal membaca clipboard. Pastikan Termux:API terinstall.\x1b[0m');continue
 		if stripped=='DONE':break
 		if stripped.lower()in('exit','q','0','batal'):return
 		lines.append(line)
@@ -2280,11 +2281,20 @@ def cari_dan_ganti_manual():
 	def _baca_blok(judul,hint_baris1,hint_baris2=''):
 		print(f"  [1;38;5;{C_CYAN}m{judul}[0m");print(f"  [38;5;{C_DGRAY}m{hint_baris1}[0m")
 		if hint_baris2:print(f"  [38;5;{C_GRAY}m{hint_baris2}[0m")
-		print(f"  [38;5;240m{"─"*sep_w}[0m");lines=[];empty_streak=0
+		print(f"  [1;38;5;46m  ✨ Ketik :clip untuk auto-paste dari clipboard[0m");print(f"  [38;5;240m{"─"*sep_w}[0m");lines=[];empty_streak=0
 		while True:
-			try:line=input()
+			try:
+				line=sys.stdin.readline()
+				if not line:break
+				line=line.strip('\n')
 			except(EOFError,KeyboardInterrupt):return
 			stripped=line.strip()
+			if stripped==':clip':
+				try:
+					r=subprocess.run(['termux-clipboard-get'],capture_output=True,text=True,timeout=5)
+					if r.returncode==0 and r.stdout:lines.extend(r.stdout.splitlines());print(f"  [32m[+] Berhasil mengambil {len(r.stdout.splitlines())} baris dari clipboard.[0m");empty_streak=0;continue
+				except Exception:pass
+				print('  \x1b[31m[!] Gagal membaca clipboard. Pastikan Termux:API terinstall.\x1b[0m');continue
 			if stripped=='DONE':
 				while lines and lines[-1].strip()=='':lines.pop()
 				break
