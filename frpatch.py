@@ -725,10 +725,6 @@ def copy_to_clipboard(text):
 		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
 	if os.path.isdir('/data/data/com.termux'):print('\n  [INFO] Untuk mengaktifkan auto-copy di Termux:');print('         1. Install Termux:API dari F-Droid atau Google Play');print('         2. Jalankan: pkg install termux-api');print('         Setelah itu, clipboard akan bekerja otomatis.\n')
 	return False
-def _detect_non_termux_android_app():
-	_paths=os.environ.get('HOME','')+os.environ.get('PREFIX','')
-	if'com.termux'in _paths:return
-	_m=re.search('/data/(?:data|user/\\d+)/([\\w.]+)/',_paths);return _m.group(1)if _m else None
 def read_from_clipboard():
 	cmds=[['termux-clipboard-get'],['xclip','-selection','clipboard','-o'],['xsel','--clipboard','--output'],['powershell.exe','-command','Get-Clipboard'],['pbpaste']]
 	for cmd in cmds:
@@ -736,8 +732,6 @@ def read_from_clipboard():
 			r=subprocess.run(cmd,timeout=5,capture_output=True)
 			if r.returncode==0:return r.stdout.decode('utf-8',errors='replace')
 		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
-	_app_pkg=_detect_non_termux_android_app()
-	if _app_pkg:print(f"\n  [INFO] Auto-paste clipboard tidak tersedia di aplikasi terminal ini ({_app_pkg}).");print('         Fitur ini hanya bekerja di Termux + paket termux-api (pkg install termux-api).');print('         Silakan tempel (paste) kode patch secara manual di bawah.\n')
 def load_ai_config():
 	if os.path.exists(AI_CONFIG_PATH):
 		try:
@@ -1138,20 +1132,12 @@ def paste_patch(dry_run=False):
 	for line in info_lines:_pp_buf.append(_c(line))
 	_pp_buf.append('');_pp_buf.append(_c('\x1b[1;38;5;215m↓ SILAKAN PASTE (TEMPEL) KODE PATCH DI BAWAH INI ↓\x1b[0m'));_pp_sep_w=max(20,min(_pp_term_cols-2,74));_pp_buf.append(_c(f"[38;5;208m{"─"*_pp_sep_w}[0m"))
 	for _pp_line in _pp_buf:print(_pp_line)
-	_pp_clip=read_from_clipboard();_pp_clip_markers=':file',':find',':new_file','===FIND==='
-	if _pp_clip and _pp_clip.strip()and any(m in _pp_clip for m in _pp_clip_markers):
-		_pp_clip_lines=_pp_clip.strip().splitlines();_pp_preview_n=min(4,len(_pp_clip_lines));print(_c('\x1b[38;5;46m✔ Terdeteksi isi clipboard yang mirip format patch:\x1b[0m'))
-		for _pl in _pp_clip_lines[:_pp_preview_n]:print(_c(f"[38;5;244m│ {_pl[:max(10,_pp_term_cols-6)]}[0m"))
-		if len(_pp_clip_lines)>_pp_preview_n:print(_c(f"[38;5;244m│ ... ({len(_pp_clip_lines)-_pp_preview_n} baris lagi)[0m"))
-		print(_c('\x1b[1;38;5;215mPakai isi clipboard ini? [Y] Ya   [n] Ketik/tempel manual\x1b[0m'))
-		try:_pp_ans=input().strip().lower()
-		except(EOFError,KeyboardInterrupt):return
-		if _pp_ans in('','y','ya'):return _pp_clip
-	lines=[];empty_count=0
+	_pp_clip=read_from_clipboard();_pp_clip_markers=':file',':find',':new_file','===FIND===';_pp_clip_valid=bool(_pp_clip and _pp_clip.strip()and any(m in _pp_clip for m in _pp_clip_markers));lines=[];empty_count=0
 	while True:
 		try:line=input()
 		except(EOFError,KeyboardInterrupt):return
 		stripped=line.strip()
+		if not lines and stripped==''and _pp_clip_valid:return _pp_clip
 		if stripped=='DONE':break
 		if stripped.lower()in('exit','q','0','batal'):return
 		lines.append(line)
