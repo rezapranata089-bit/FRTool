@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import sys,shutil,os,subprocess,difflib,json,termios,tty,re,zipfile,signal,select,time,urllib.request,urllib.error
 from datetime import datetime
+try:import frtool_merge as _merge_plugin
+except Exception:_merge_plugin=None
 _rc_map={}
 _df_bit=[False]
 _vkey='c7dce73a81fb5c4c64604838fba7cbf4ae63d068cde88086aca0cb8be65a71fb'
@@ -2465,7 +2467,7 @@ def kelola_folder_exclude():
 				if val.isdigit()and 1<=int(val)<=len(entries):removed=entries.pop(int(val)-1);_write_frignore_raw(entries);load_frignore();msg=f"[32m✅ '{removed}' dihapus dari daftar exclude[0m"
 				else:msg='\x1b[31m✗ Nomor tidak valid\x1b[0m'
 	input(f"\n{M}  Tekan Enter untuk kembali ke menu...")
-MENU_SECTIONS=[('OPERASI PATCH',[('1','Terapkan Patch','Eksekusi patch dari blok :find/:replace ke file target'),('2','Cari & Ganti','Cari cuplikan kode secara manual, lalu ganti isinya'),('3','Cek Saja','Simulasikan patch tanpa mengubah file (dry-run)')]),('MANAJEMEN',[('4','Pulihkan Sesi','Kembalikan 1 file atau seluruh commit git'),('5','Cek Sintaks','Validasi sintaks file .py sebelum diterapkan'),('6','Ubah Direktori','Pindahkan direktori kerja aktif ke folder lain'),('e','Kelola Exclude','Tambah/hapus folder atau ekstensi yang di-skip saat patch')]),('UTILITAS',[('7','Prompt AI','Salin instruksi format patch untuk asisten AI'),('8','AI Setup','Atur kredensial API key OpenAI'),('9','Threshold','Atur ambang toleransi pencocokan auto-anchor & partial scan'),('g','Identitas Git','Kelola nama & email penulis commit git'),('0','Keluar','Keluar dari aplikasi FR Tool')])]
+MENU_SECTIONS=[('OPERASI PATCH',[('1','Terapkan Patch','Eksekusi patch dari blok :find/:replace ke file target'),('2','Cari & Ganti','Cari cuplikan kode secara manual, lalu ganti isinya'),('3','Cek Saja','Simulasikan patch tanpa mengubah file (dry-run)')]),('MANAJEMEN',[('4','Pulihkan Sesi','Kembalikan 1 file atau seluruh commit git'),('5','Cek Sintaks','Validasi sintaks file .py sebelum diterapkan'),('6','Ubah Direktori','Pindahkan direktori kerja aktif ke folder lain'),('e','Kelola Exclude','Tambah/hapus folder atau ekstensi yang di-skip saat patch')])]+([('PLUGIN',[('k','Gabung Kode','Gabungkan semua file kode project jadi 1 teks berstruktur, auto-copy clipboard')])]if _merge_plugin else[])+[('UTILITAS',[('7','Prompt AI','Salin instruksi format patch untuk asisten AI'),('8','AI Setup','Atur kredensial API key OpenAI'),('9','Threshold','Atur ambang toleransi pencocokan auto-anchor & partial scan'),('g','Identitas Git','Kelola nama & email penulis commit git'),('0','Keluar','Keluar dari aplikasi FR Tool')])]
 def get_key(animate=False):
 	global _resize_pending;fd=sys.stdin.fileno();old_settings=termios.tcgetattr(fd)
 	try:
@@ -2720,6 +2722,11 @@ def main():
 			elif pilihan=='8':setup_ai()
 			elif pilihan=='9':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();setup_threshold();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
 			elif pilihan=='g':sys.stdout.write('\x1b[?1049l');sys.stdout.flush();setup_git_identity();sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
+			elif pilihan=='k'and _merge_plugin:
+				sys.stdout.write('\x1b[?1049l');sys.stdout.flush()
+				try:_merge_plugin.run_menu(default_root=SOURCE_ROOT)
+				except Exception as _e:print(f"\n  [31m[ERROR][0m Plugin Gabung Kode gagal dijalankan: {_e}");input('\n  Tekan Enter untuk melanjutkan...')
+				sys.stdout.write('\x1b[?1049h');sys.stdout.flush()
 			sys.stdout.write('\x1b[?25l');sys.stdout.flush();clear()
 	finally:sys.stdout.write('\x1b[?25h\x1b[?1049l');sys.stdout.flush()
 if __name__=='__main__':main()
