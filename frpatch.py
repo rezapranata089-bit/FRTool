@@ -691,6 +691,9 @@ def parse_patch(text):
 		elif re.match('^:\\s*new_file$',tag_check):
 			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[]
 			current_find='__NEW_FILE__';state='after_find'
+		elif re.match('^:\\s*hapus$',tag_check):
+			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[]
+			_add_pair(results,current_file,'__DELETE_FILE__','');state='idle';current_find=None;buffer=[]
 		elif re.match('^:\\s*end_find$',tag_check):
 			if state=='find':current_find='\n'.join(buffer);buffer=[];state='after_find'
 		elif re.match('^:\\s*replace$',tag_check):
@@ -1307,8 +1310,11 @@ def scan_dan_apply(patch_text,dry_run=False):
 				if res is None:return
 				if res[2].startswith('head_tail'):return res[0]+1
 				return content_str[:res[0]].count('\n')+1
-			is_explicit_new=find_stripped=='__NEW_FILE__'
-			if is_explicit_new:
+			is_explicit_new=find_stripped=='__NEW_FILE__';is_explicit_delete=find_stripped=='__DELETE_FILE__'
+			if is_explicit_delete:
+				if auto_mode or not path_ok:print(f"  [31m[GAGAL][0m Blok #{i} — File [1m{filename}[0m tidak ditemukan di project, tidak bisa dihapus (via :hapus).");log_fail_event(i,'hapus_file_not_found',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+				rel_del=os.path.relpath(filepath,SOURCE_ROOT);print(f"  [31m[Hapus File][0m File akan dihapus (via :hapus): [1;31m{rel_del}[0m");matched_file=filepath;matched_content=content;match_type='delete_file';match_line_no=None;final_match_result=0,0,'delete_file';find_stripped='';replace_stripped=''
+			elif is_explicit_new:
 				new_dir,new_base=_resolve_create_dir(filename)
 				if new_dir is None:print(f"  [31m[BATAL][0m Auto-Create dibatalkan oleh user.");log_fail_event(i,'auto_create_cancelled',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
 				new_filepath=os.path.join(new_dir,new_base)
@@ -1412,7 +1418,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 								print(f"  [GAGAL] Blok #{i} — Kode tidak ditemukan di file manapun.");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m")
 								for pl in find_stripped.splitlines():print(f"          │ {pl}")
 								log_fail_event(i,'not_found_in_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
-			if match_type.startswith('head_tail'):replace_mode='first'
+			if match_type.startswith('head_tail')or match_type=='delete_file':replace_mode='first'
 			else:
 				count_exact=matched_content.count(find_stripped);count_total=count_exact if count_exact>0 else 1
 				if count_total>1:replace_mode=tanya_mode_replace(count_total,i)
@@ -1425,6 +1431,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 			elif match_type=='auto_anchor':method_label=' \x1b[38;5;208m[Smart Auto-Anchor]\x1b[0m'
 			elif match_type=='fuzzy_block':method_label=' \x1b[38;5;214m[Fuzzy Block >80%]\x1b[0m'
 			elif match_type=='new_file':method_label=' \x1b[38;5;46m[File Baru — Auto-Create]\x1b[0m'
+			elif match_type=='delete_file':method_label=' \x1b[31m[File Dihapus — via :hapus]\x1b[0m'
 			else:method_label=f" [38;5;244m[{match_type}][0m"
 			rel=os.path.relpath(matched_file,SOURCE_ROOT);line_label=f" [33m(baris {match_line_no})[0m"if match_line_no else'';print(f"  [32m[OK][0m Blok [1m#{i}[0m → [1;36m{rel}[0m{line_label}{method_label}");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m");c_st,c_en=0,0
 			if final_match_result:
@@ -1499,7 +1506,9 @@ def scan_dan_apply(patch_text,dry_run=False):
 		plan_by_file[fp].append(item)
 	stop_ev_pv,t_pv=_spinner_start('Menyusun pratinjau perubahan (menerapkan blok ke memori)...')
 	for(filepath,items)in plan_by_file.items():
-		orig_content=items[0][4];preview_map[filepath]=[orig_content,orig_content];items_sorted=sorted(items,key=lambda x:x[6],reverse=True);working=orig_content
+		orig_content=items[0][4]
+		if any(it[5]=='delete_file'for it in items):preview_map[filepath]=[orig_content,None];continue
+		preview_map[filepath]=[orig_content,orig_content];items_sorted=sorted(items,key=lambda x:x[6],reverse=True);working=orig_content
 		for(_,find,replace,mode,_,mtype,c_start,c_end)in items_sorted:
 			if mode=='all':new_content=working.replace(find,replace)
 			else:
@@ -1528,14 +1537,20 @@ def scan_dan_apply(patch_text,dry_run=False):
 			working=new_content
 		preview_map[filepath][1]=working
 	_spinner_stop(stop_ev_pv,t_pv)
-	for(filepath,(lama,baru))in preview_map.items():rel=os.path.relpath(filepath,SOURCE_ROOT);print(f"  📄 {rel}");tampilkan_diff(lama,baru,filepath);print()
+	for(filepath,(lama,baru))in preview_map.items():
+		rel=os.path.relpath(filepath,SOURCE_ROOT);print(f"  📄 {rel}")
+		if baru is None:print(f"  [31m[HAPUS][0m File ini akan [1;31mDIHAPUS[0m dari project (via :hapus).")
+		else:tampilkan_diff(lama,baru,filepath)
+		print()
 	print('─'*_sa_sep_w);cfg=load_ai_config()
 	if cfg.get('api_key','').strip():
 		cek_syn=popup_confirm('🛡️ CEK SYNTAX ERROR (AI)',['Periksa potensi Syntax Error fatal pada kode','yang baru diubah menggunakan AI?'],[('y','Ya, Periksa'),('n','Tidak, Lewati')])
 		if cek_syn=='y':
 			import threading,time;print()
 			for(filepath,(_,baru))in preview_map.items():
-				rel=os.path.relpath(filepath,SOURCE_ROOT);stop_ev_c,tc=_spinner_start(f"Menganalisis struktur syntax {rel}...",color='33');hasil_cek=cek_syntax_ai(baru,rel);_spinner_stop(stop_ev_c,tc)
+				rel=os.path.relpath(filepath,SOURCE_ROOT)
+				if baru is None:print(f"  [38;5;244m[LEWATI][0m {rel} — dilewati (file akan dihapus).");continue
+				stop_ev_c,tc=_spinner_start(f"Menganalisis struktur syntax {rel}...",color='33');hasil_cek=cek_syntax_ai(baru,rel);_spinner_stop(stop_ev_c,tc)
 				if hasil_cek=='SKIP':print(f"  [33m[SKIP][0m Pengecekan dilewati (API key belum diatur) untuk {rel}")
 				elif hasil_cek.startswith('SKIP_ERR_HTTP:')or hasil_cek.startswith('SKIP_ERR_NET:'):_alasan=hasil_cek.split(':',1)[1].strip();print(f"  [33m[SKIP][0m Pengecekan dilewati untuk {rel} — gagal konek ke AI: {_alasan}")
 				elif hasil_cek.upper().startswith('AMAN'):print(f"  [32m[AMAN][0m Struktur kode pada {rel} bebas dari error fatal.")
@@ -1552,6 +1567,13 @@ def scan_dan_apply(patch_text,dry_run=False):
 	_git_ensure_repo()
 	for(filepath,(orig_content,new_content))in preview_map.items():
 		rel=os.path.relpath(filepath,SOURCE_ROOT)
+		if new_content is None:
+			if not _is_path_inside_root(filepath):print(f"  [31m[DITOLAK][0m {rel} — path di luar folder project, TIDAK dihapus.");continue
+			if os.path.exists(filepath):
+				try:os.remove(filepath);session_files.append({'rel':rel,'deleted':True});print(f"  [31m[OK][0m {rel} — file berhasil dihapus.")
+				except Exception as _e:print(f"  [31m[GAGAL][0m {rel} — gagal dihapus: {_e}")
+			else:print(f"  [33m[SKIP][0m {rel} — file sudah tidak ada, tidak perlu dihapus.")
+			continue
 		if _self_tool:
 			ok_syntax,syntax_err=_validate_python_syntax(filepath,new_content)
 			if not ok_syntax:print(f"  [31m[DITOLAK][0m {rel} — {syntax_err}");print(f"         [33mFile TIDAK ditulis, isi lama dipertahankan supaya tool tidak rusak.[0m");continue
@@ -1575,7 +1597,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 	if blok_gagal:print(f"  [31m✘  Blok gagal     : {blok_gagal} / {total_blok}[0m")
 	else:print(f"  [32m✔  Blok gagal     : 0 / {total_blok}[0m")
 	print(f"  [36m✎  File diubah    : {file_count} file[0m")
-	for entry in session_files:print(f"       • {entry["rel"]}")
+	for entry in session_files:_tag_hapus=' \x1b[31m(dihapus)\x1b[0m'if entry.get('deleted')else'';print(f"       • {entry["rel"]}{_tag_hapus}")
 	if commit_hash:print(f"  [33m⎘  Git commit      : {commit_hash}[0m")
 	elif commit_err and commit_err!='tidak ada perubahan untuk di-commit':print(f"  [31m[GIT GAGAL][0m {commit_err}")
 	print(f"  [38;5;244m⏱  Waktu total     : {waktu_str}[0m");print()
@@ -2013,7 +2035,7 @@ def _restore_semua_commit():
 			input('\n  Tekan Enter untuk lanjut...');sys.stdout.write('\x1b[?1049h\x1b[?25l');sys.stdout.flush();_first_draw=True
 		elif k in('ESC','q','Q','0'):break
 	sys.stdout.write('\x1b[?25h');sys.stdout.flush()
-PROMPT_AI='Gunakan format Find & Replace untuk semua perubahan kode.\n\nPENTING:\n\n- Kirim SEMUA perubahan hanya dalam SATU BLOK KODE ("text ... ") agar bisa langsung saya copy sekali.\n- Jangan memecah menjadi beberapa blok kode.\n- Jangan mengirim seluruh file, hanya bagian yang perlu diubah.\n- Jika ada banyak file atau banyak perubahan, gabungkan semuanya di dalam blok kode yang sama.\n- Di baris PALING ATAS (sebelum ":file" pertama), tambahkan SATU baris ":title <judul singkat perubahan>" yang merangkum perubahan pada patch ini.\n\nFormat untuk MENGEDIT File (Wajib digunakan):\n\n:title Judul singkat perubahan (dipakai sebagai nama commit)\n\n:file path/ke/file.js\n:find\nkode lama yang ada di file (tulis persis seperti aslinya)\n:end_find\n:replace\nkode baru penggantinya\n:end_replace\n\nFormat untuk MEMBUAT File Baru (Gunakan :new_file):\n\n:file path/ke/NewFile.js\n:new_file\n:replace\nseluruh isi kode file baru\n:end_replace\n\nJika file benar-benar baru, gunakan ":new_file". Jangan mengisi ":find" dengan kode palsu, placeholder, atau potongan kode generik.\n\nAturan Tambahan:\n\n- Bagian ":find" harus berisi kode yang benar-benar ada di file.\n- Jika menambahkan kode baru di file yang sudah ada, gunakan ":find" pada bagian sebelum/sesudah lokasi penyisipan agar posisi penambahan jelas.\n- Pertahankan indentasi dan formatting asli file.\n- Jangan memberi penjelasan panjang di antara perubahan.\n\nJika blok ":find" terlalu panjang, gunakan format head...tail dengan penanda skip:\n\n:find\n5 baris pertama dari blok asli\n:skip\n5 baris terakhir dari blok asli\n:end_find\n:replace\nkode pengganti lengkap\n:end_replace\n\nWAJIB: baris ":skip" harus berdiri SENDIRI di baris tersendiri. Jangan gunakan "..." biasa.\n\nWAJIB DIPATUHI:\n- Seluruh output Find & Replace harus berada dalam SATU BLOK KODE.\n- Tidak boleh ada blok kode kedua.\n- Tidak boleh ada potongan Find & Replace di luar blok kode tersebut.'
+PROMPT_AI='Gunakan format Find & Replace untuk semua perubahan kode.\n\nPENTING:\n\n- Kirim SEMUA perubahan hanya dalam SATU BLOK KODE ("text ... ") agar bisa langsung saya copy sekali.\n- Jangan memecah menjadi beberapa blok kode.\n- Jangan mengirim seluruh file, hanya bagian yang perlu diubah.\n- Jika ada banyak file atau banyak perubahan, gabungkan semuanya di dalam blok kode yang sama.\n- Di baris PALING ATAS (sebelum ":file" pertama), tambahkan SATU baris ":title <judul singkat perubahan>" yang merangkum perubahan pada patch ini.\n\nFormat untuk MENGEDIT File (Wajib digunakan):\n\n:title Judul singkat perubahan (dipakai sebagai nama commit)\n\n:file path/ke/file.js\n:find\nkode lama yang ada di file (tulis persis seperti aslinya)\n:end_find\n:replace\nkode baru penggantinya\n:end_replace\n\nFormat untuk MEMBUAT File Baru (Gunakan :new_file):\n\n:file path/ke/NewFile.js\n:new_file\n:replace\nseluruh isi kode file baru\n:end_replace\n\nJika file benar-benar baru, gunakan ":new_file". Jangan mengisi ":find" dengan kode palsu, placeholder, atau potongan kode generik.\n\nFormat untuk MENGHAPUS File (Gunakan :hapus):\n\n:file path/ke/FileLama.js\n:hapus\n\nGunakan ":hapus" hanya untuk file yang benar-benar ada di project. Tidak perlu blok ":find" atau ":replace" — cukup taruh ":hapus" tepat setelah ":file <path>".\n\nAturan Tambahan:\n\n- Bagian ":find" harus berisi kode yang benar-benar ada di file.\n- Jika menambahkan kode baru di file yang sudah ada, gunakan ":find" pada bagian sebelum/sesudah lokasi penyisipan agar posisi penambahan jelas.\n- Pertahankan indentasi dan formatting asli file.\n- Jangan memberi penjelasan panjang di antara perubahan.\n\nJika blok ":find" terlalu panjang, gunakan format head...tail dengan penanda skip:\n\n:find\n5 baris pertama dari blok asli\n:skip\n5 baris terakhir dari blok asli\n:end_find\n:replace\nkode pengganti lengkap\n:end_replace\n\nWAJIB: baris ":skip" harus berdiri SENDIRI di baris tersendiri. Jangan gunakan "..." biasa.\n\nWAJIB DIPATUHI:\n- Seluruh output Find & Replace harus berada dalam SATU BLOK KODE.\n- Tidak boleh ada blok kode kedua.\n- Tidak boleh ada potongan Find & Replace di luar blok kode tersebut.'
 def test_api_key_validity(provider,model,key,local_url_override=None):
 	cfg=load_ai_config();local_url=cfg.get('local_url','').strip();PROVIDER_URLS={'openai':'https://api.openai.com/v1/chat/completions','groq':'https://api.groq.com/openai/v1/chat/completions','openrouter':'https://openrouter.ai/api/v1/chat/completions','local':local_url if local_url else'http://127.0.0.1:4891/v1/chat/completions'};api_url=PROVIDER_URLS.get(provider,PROVIDER_URLS['openai'])
 	if provider=='local'and(local_url_override or'').strip():api_url=local_url_override.strip()
