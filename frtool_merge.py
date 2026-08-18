@@ -23,7 +23,9 @@ from datetime import datetime
 
 HISTORY_PATH = os.path.expanduser("~/.frtool_merge_history.json")
 
-DEFAULT_EXTS = ['kt', 'xml', 'json', 'js', 'html', 'css']
+DEFAULT_EXTS = ['kt', 'xml', 'json', 'js', 'css', 'kts', 'pro', 'gradle', 'toml', 'java']
+
+JSON_MAX_SIZE = 50 * 1024  # 50 KB — file .json di atas ini dilewati
 
 IGNORE_DIRS = {
     '.git', '.gradle', '.idea', 'build', '.kotlin', 'captures', '.cxx',
@@ -163,16 +165,53 @@ def _scan_files(root, exts):
 def _build_merged_text(files):
     parts = []
     skipped = []
-    sep = '=' * SEP_WIDTH
     for rel, full in files:
+        ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
+        if ext == 'json':
+            try:
+                size = os.path.getsize(full)
+            except Exception as e:
+                skipped.append((rel, str(e)))
+                continue
+            if size > JSON_MAX_SIZE:
+                skipped.append((rel, f"json > {JSON_MAX_SIZE // 1024}KB, dilewati"))
+                continue
         try:
             with open(full, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
         except Exception as e:
             skipped.append((rel, str(e)))
             continue
-        parts.append(f"{sep}\nFILE: {rel}\n{sep}\n{content}\n")
-    return "\n".join(parts), skipped
+        parts.append(f"### FILE: {rel}\n{content}")
+    return "\n\n".join(parts), skipped
+
+
+def _build_file_tree(files, root):
+    """Bangun representasi tree sederhana dari daftar file (path relatif)."""
+    tree = {}
+    for rel, _ in files:
+        parts = rel.split(os.sep)
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node.setdefault(parts[-1], None)
+
+    root_name = os.path.basename(root.rstrip(os.sep)) or root
+    lines = [root_name]
+
+    def _render(node, prefix=""):
+        entries = sorted(node.items(), key=lambda kv: (kv[1] is None, kv[0].lower()))
+        count = len(entries)
+        for i, (name, child) in enumerate(entries):
+            is_last = (i == count - 1)
+            connector = "└── " if is_last else "├── "
+            lines.append(prefix + connector + name)
+            if child is not None:
+                extension = "    " if is_last else "│   "
+                _render(child, prefix + extension)
+
+    _render(tree)
+    return "\n".join(lines)
 
 
 def run_menu(default_root=None):
@@ -198,7 +237,10 @@ def run_menu(default_root=None):
         input("\n  Tekan Enter untuk kembali ke menu...")
         return
 
+    tree_text = _build_file_tree(files, root)
+
     merged_text, skipped = _build_merged_text(files)
+    merged_text = f"### PROJECT STRUCTURE\n{tree_text}\n\n{merged_text}"
 
     total_files = len(files) - len(skipped)
     total_chars = len(merged_text)
@@ -207,9 +249,9 @@ def run_menu(default_root=None):
     print(f"  \033[32m[OK]\033[0m {total_files} file digabungkan "
           f"({total_lines} baris, {total_chars:,} karakter).")
     if skipped:
-        print(f"  \033[33m[SKIP]\033[0m {len(skipped)} file dilewati (gagal dibaca):")
+        print(f"  \033[33m[SKIP]\033[0m {len(skipped)} file dilewati:")
         for rel, err in skipped[:5]:
-            print(f"         - {rel}")
+            print(f"         - {rel} ({err})")
         if len(skipped) > 5:
             print(f"         ... dan {len(skipped) - 5} lainnya")
 
