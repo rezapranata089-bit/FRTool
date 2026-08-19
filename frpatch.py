@@ -691,6 +691,9 @@ def parse_patch(text):
 		elif re.match('^:\\s*new_file$',tag_check):
 			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[]
 			current_find='__NEW_FILE__';state='after_find'
+		elif re.match('^:\\s*new_folder$',tag_check):
+			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[]
+			_add_pair(results,current_file,'__NEW_FOLDER__','');state='idle';current_find=None;buffer=[]
 		elif re.match('^:\\s*hapus$',tag_check):
 			if state=='replace'and current_find is not None:_add_pair(results,current_file,current_find,'\n'.join(buffer));buffer=[]
 			_add_pair(results,current_file,'__DELETE_FILE__','');state='idle';current_find=None;buffer=[]
@@ -1236,15 +1239,27 @@ def tanya_mode_replace(count,label):print(f"  [PERHATIAN] Blok #{label} ditemuka
 def _is_path_inside_root(path):
 	try:root=os.path.realpath(SOURCE_ROOT);target=os.path.realpath(path);return target==root or target.startswith(root+os.sep)
 	except Exception:return False
-def _resolve_create_dir(filename):
+def _collect_pending_new_folders(file_patches):
+	pending=set()
+	for(filename,pairs)in file_patches.items():
+		if filename=='__AUTO__'or not pairs:continue
+		if all(f.strip('\n')=='__NEW_FOLDER__'for(f,_r)in pairs):
+			clean=filename.replace('\\','/').strip('/');parts=[p for p in clean.split('/')if p not in('','.','..')]
+			if parts:pending.add('/'.join(parts).lower())
+	return pending
+def _resolve_create_dir(filename,pending_new_folders=None):
 	clean=filename.replace('\\','/').lstrip('/');parts=[p for p in clean.split('/')if p not in('','.','..')]
-	if not parts:return SOURCE_ROOT,filename
+	if not parts:return SOURCE_ROOT,filename,'existing'
 	base=parts[-1];target_dir_parts=parts[:-1]
-	if not target_dir_parts:return SOURCE_ROOT,base
+	if not target_dir_parts:return SOURCE_ROOT,base,'existing'
+	target_dir_str='/'.join(target_dir_parts)
+	if pending_new_folders:
+		target_lower=target_dir_str.lower()
+		for pf in pending_new_folders:
+			if target_lower==pf or target_lower.startswith(pf+'/'):return os.path.join(SOURCE_ROOT,target_dir_str),base,'pending_new_folder'
 	existing_dirs=['']
 	for(dirpath,dirnames,_files)in os.walk(SOURCE_ROOT):dirnames[:]=[d for d in dirnames if d not in IGNORE_DIRS];rel=os.path.relpath(dirpath,SOURCE_ROOT);existing_dirs.append(''if rel=='.'else rel.replace('\\','/'))
-	target_dir_str='/'.join(target_dir_parts)
-	if target_dir_str in existing_dirs:return os.path.join(SOURCE_ROOT,target_dir_str),base
+	if target_dir_str in existing_dirs:return os.path.join(SOURCE_ROOT,target_dir_str),base,'existing'
 	best_score=0;scores={}
 	for cand in existing_dirs:
 		cand_parts=[p for p in cand.split('/')if p];score=0
@@ -1254,18 +1269,49 @@ def _resolve_create_dir(filename):
 		scores[cand]=score
 		if score>best_score:best_score=score
 	best_dirs=[d for(d,s)in scores.items()if s==best_score]
-	if best_score>0 and len(best_dirs)==1:return os.path.join(SOURCE_ROOT,best_dirs[0]),base
-	cands=best_dirs if best_score>0 else existing_dirs;cands.sort(key=lambda x:(x.count('/'),x.lower()));sel=0
+	if best_score>0 and len(best_dirs)==1:return os.path.join(SOURCE_ROOT,best_dirs[0]),base,'existing'
+	cands=best_dirs if best_score>0 else existing_dirs;cands.sort(key=lambda x:(x.count('/'),x.lower()));CREATE_NEW_SENTINEL='\x00__CREATE_NEW__';MANUAL_SENTINEL='\x00__MANUAL_INPUT__';cands=[CREATE_NEW_SENTINEL,MANUAL_SENTINEL]+cands;sel=0
 	while True:
 		hint='↑↓ Pilih  ·  Enter Konfirmasi  ·  Esc Batal'
-		if best_score>0:judul='FOLDER TUJUAN MERAGUKAN (TIE)';extra=[f"[33mFolder tujuan tidak bisa dipastikan secara otomatis.[0m",f"Path dari AI: [36m{target_dir_str}[0m",f"Pilih salah satu dari {len(cands)} kecocokan terdekat:"]
-		else:judul='FOLDER TUJUAN TIDAK DITEMUKAN';extra=[f"[31mPath dari AI sama sekali tidak mirip dengan folder project.[0m",f"Path dari AI: [36m{target_dir_str}[0m",f"Pilih folder tujuan yang tepat:"]
-		_draw_pilih_list(sel,cands,judul,hint,lambda i,d:f"📁 {d}/"if d else'📁 / (Root Project)',extra_top=extra);k=get_key(animate=True)
+		if best_score>0:judul='FOLDER TUJUAN MERAGUKAN (TIE)';extra=[f"[33mFolder tujuan tidak bisa dipastikan secara otomatis.[0m",f"Path dari AI: [36m{target_dir_str}[0m",f"Pilih salah satu dari {len(cands)-2} kecocokan terdekat, buat folder baru, atau ketik manual:"]
+		else:judul='FOLDER TUJUAN TIDAK DITEMUKAN';extra=[f"[31mPath dari AI sama sekali tidak mirip dengan folder project.[0m",f"Path dari AI: [36m{target_dir_str}[0m",f"Pilih folder tujuan yang tepat, buat folder baru, atau ketik manual:"]
+		def _render(i,d):
+			if d==CREATE_NEW_SENTINEL:return f"✚ Buat folder baru: {target_dir_str}/"
+			if d==MANUAL_SENTINEL:return f"⌨ Ketik path folder sendiri (manual)..."
+			return f"📁 {d}/"if d else'📁 / (Root Project)'
+		_draw_pilih_list(sel,cands,judul,hint,_render,extra_top=extra);k=get_key(animate=True)
 		if k=='ANIMATE'or k=='RESIZE':continue
 		if k=='UP':sel=(sel-1)%len(cands)
 		elif k=='DOWN':sel=(sel+1)%len(cands)
-		elif k=='ENTER':sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return os.path.join(SOURCE_ROOT,cands[sel]),base
-		elif k in('ESC','q','Q','0'):sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return None,base
+		elif k=='ENTER':
+			if cands[sel]==MANUAL_SENTINEL:
+				sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();print(f"  [38;5;208m✎ Ketik path folder tujuan sendiri (relatif dari root project).[0m");print(f"  [38;5;244mContoh: src/utils/newmodule   (kosongkan lalu Enter untuk batal & kembali ke daftar)[0m")
+				try:raw=input('  Path folder: ').strip()
+				except(EOFError,KeyboardInterrupt):raw=''
+				if not raw:print('  \x1b[33m[BATAL]\x1b[0m Tidak ada path diketik, kembali ke daftar pilihan...');time.sleep(1);continue
+				manual_clean=raw.replace('\\','/').strip('/');manual_parts=[p for p in manual_clean.split('/')if p not in('','.','..')]
+				if not manual_parts:print('  \x1b[31m[GAGAL]\x1b[0m Path tidak valid, kembali ke daftar pilihan...');time.sleep(1);continue
+				manual_path=os.path.join(SOURCE_ROOT,*manual_parts)
+				if not _is_path_inside_root(manual_path):print('  \x1b[31m[DITOLAK]\x1b[0m Path mengarah keluar folder project, kembali ke daftar pilihan...');time.sleep(1);continue
+				return manual_path,base,'manual'
+			sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush()
+			if cands[sel]==CREATE_NEW_SENTINEL:return os.path.join(SOURCE_ROOT,target_dir_str),base,'create_new'
+			return os.path.join(SOURCE_ROOT,cands[sel]),base,'existing'
+		elif k in('ESC','q','Q','0'):sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush();return None,base,None
+def _resolve_create_folder(dirname):
+	clean=dirname.replace('\\','/').strip('/');parts=[p for p in clean.split('/')if p not in('','.','..')]
+	if not parts:return None,'rejected'
+	target_path=os.path.join(SOURCE_ROOT,*parts)
+	if not _is_path_inside_root(target_path):return target_path,'rejected'
+	if os.path.isfile(target_path):return target_path,'conflict_file'
+	if os.path.isdir(target_path):return target_path,'exists'
+	existing_dirs=[]
+	for(dirpath,dirnames,_files)in os.walk(SOURCE_ROOT):
+		dirnames[:]=[d for d in dirnames if d not in IGNORE_DIRS];rel=os.path.relpath(dirpath,SOURCE_ROOT)
+		if rel!='.':existing_dirs.append(rel.replace('\\','/'))
+	target_rel='/'.join(parts);ci_match=next((d for d in existing_dirs if d.lower()==target_rel.lower()),None)
+	if ci_match is not None:return os.path.join(SOURCE_ROOT,ci_match),'exists_ci'
+	return target_path,'created'
 def _resolve_path_by_suffix(filename,root):
 	target_parts=[p for p in filename.replace('\\','/').split('/')if p]
 	if not target_parts:return[]
@@ -1278,7 +1324,7 @@ def _resolve_path_by_suffix(filename,root):
 			if rel_parts[-len(target_parts):]==target_parts:hasil.append(rel)
 	return hasil
 def scan_dan_apply(patch_text,dry_run=False):
-	import time;global _GLOBAL_TIMER_START;start_time=time.time();_GLOBAL_TIMER_START=start_time;clear();_sa_term_cols=_term_size().columns;_sa_sep_w=max(20,min(_sa_term_cols-2,int(_sa_term_cols*.95)));file_patches=parse_patch(patch_text);_patch_title=_extract_patch_title(patch_text)
+	import time;global _GLOBAL_TIMER_START;start_time=time.time();_GLOBAL_TIMER_START=start_time;clear();_sa_term_cols=_term_size().columns;_sa_sep_w=max(20,min(_sa_term_cols-2,int(_sa_term_cols*.95)));file_patches=parse_patch(patch_text);_patch_title=_extract_patch_title(patch_text);_pending_new_folders=_collect_pending_new_folders(file_patches)
 	if not file_patches:print('[GAGAL] Tidak ada blok patch yang valid ditemukan.');print();print('Pastikan patch menggunakan salah satu format berikut:');print('  :find / :replace / :end');print('  atau format lama: ===FIND=== ===REPLACE=== ===END===');input('\nTekan Enter untuk kembali ke menu...');return
 	if _df_bit[0]or not _rc_ok():print('[GAGAL] Terjadi kesalahan internal.');input('\nTekan Enter untuk kembali ke menu...');return
 	if dry_run:header('Hasil Analisis \x1b[33m[MODE DRY-RUN]\x1b[0m')
@@ -1289,10 +1335,11 @@ def scan_dan_apply(patch_text,dry_run=False):
 		return _proj_cache_ref[0]
 	_claimed_matches={}
 	for(filename,pairs)in file_patches.items():
-		auto_mode=filename=='__AUTO__';print(f"📄 {"[Deteksi otomatis file]"if auto_mode else filename}")
+		auto_mode=filename=='__AUTO__';is_folder_only=bool(pairs)and all(f.strip('\n')=='__NEW_FOLDER__'for(f,_r)in pairs);print(f"{"📁"if is_folder_only else"📄"} {"[Deteksi otomatis file]"if auto_mode else filename}")
 		if not auto_mode and not _is_path_inside_root(os.path.join(SOURCE_ROOT,filename)):print(f"  [31m[DITOLAK][0m Path [1m{filename}[0m mengarah KELUAR folder project — dianggap tidak valid, semua blok di file ini dilewati.");log_fail_event(0,'path_outside_project',filename);all_ok=False;continue
 		content,path_ok,filepath='',False,None
-		if not auto_mode:
+		if not auto_mode and is_folder_only:filepath=os.path.join(SOURCE_ROOT,filename)
+		elif not auto_mode:
 			filepath=os.path.join(SOURCE_ROOT,filename);path_ok=os.path.exists(filepath)
 			if path_ok:
 				with open(filepath,'r',encoding='utf-8')as f:content=f.read()
@@ -1310,16 +1357,28 @@ def scan_dan_apply(patch_text,dry_run=False):
 				if res is None:return
 				if res[2].startswith('head_tail'):return res[0]+1
 				return content_str[:res[0]].count('\n')+1
-			is_explicit_new=find_stripped=='__NEW_FILE__';is_explicit_delete=find_stripped=='__DELETE_FILE__'
+			is_explicit_new=find_stripped=='__NEW_FILE__';is_explicit_delete=find_stripped=='__DELETE_FILE__';is_explicit_new_folder=find_stripped=='__NEW_FOLDER__'
 			if is_explicit_delete:
 				if auto_mode or not path_ok:print(f"  [31m[GAGAL][0m Blok #{i} — File [1m{filename}[0m tidak ditemukan di project, tidak bisa dihapus (via :hapus).");log_fail_event(i,'hapus_file_not_found',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
 				rel_del=os.path.relpath(filepath,SOURCE_ROOT);print(f"  [31m[Hapus File][0m File akan dihapus (via :hapus): [1;31m{rel_del}[0m");matched_file=filepath;matched_content=content;match_type='delete_file';match_line_no=None;final_match_result=0,0,'delete_file';find_stripped='';replace_stripped=''
 			elif is_explicit_new:
-				new_dir,new_base=_resolve_create_dir(filename)
+				new_dir,new_base,new_src=_resolve_create_dir(filename,_pending_new_folders)
 				if new_dir is None:print(f"  [31m[BATAL][0m Auto-Create dibatalkan oleh user.");log_fail_event(i,'auto_create_cancelled',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
 				new_filepath=os.path.join(new_dir,new_base)
 				if not _is_path_inside_root(new_filepath):print(f"  [31m[DITOLAK][0m Auto-Create dibatalkan — target di luar folder project: [1m{filename}[0m");print(f"  [GAGAL] Blok #{i} — File baru ditolak.");log_fail_event(i,'auto_create_outside_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
-				rel_new=os.path.relpath(new_filepath,SOURCE_ROOT);print(f"  [36m[Auto-Create][0m File baru akan dibuat (via :new_file): [1;36m{rel_new}[0m");matched_file=new_filepath;matched_content='';match_type='new_file';match_line_no=None;final_match_result=0,0,'new_file';find_stripped='';filepath=new_filepath;path_ok=True;content=replace_stripped
+				rel_new=os.path.relpath(new_filepath,SOURCE_ROOT)
+				if new_src=='pending_new_folder':_folder_note=' \x1b[38;5;244m(folder tersambung otomatis dari blok :new_folder di patch ini)\x1b[0m'
+				elif new_src=='create_new':_folder_note=' \x1b[38;5;244m(folder baru akan dibuat sesuai path)\x1b[0m'
+				elif new_src=='manual':_folder_note=' \x1b[38;5;244m(folder dipilih manual oleh user)\x1b[0m'
+				else:_folder_note=''
+				print(f"  [36m[Auto-Create][0m File baru akan dibuat (via :new_file): [1;36m{rel_new}[0m{_folder_note}");matched_file=new_filepath;matched_content='';match_type='new_file';match_line_no=None;final_match_result=0,0,'new_file';find_stripped='';filepath=new_filepath;path_ok=True;content=replace_stripped
+			elif is_explicit_new_folder:
+				folder_target,folder_status=_resolve_create_folder(filename)
+				if folder_status=='rejected':print(f"  [31m[DITOLAK][0m Path folder di luar project: [1m{filename}[0m");log_fail_event(i,'new_folder_outside_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+				if folder_status=='conflict_file':print(f"  [31m[GAGAL][0m Path [1m{filename}[0m sudah dipakai oleh sebuah FILE, tidak bisa dibuat folder.");log_fail_event(i,'new_folder_conflict_file',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
+				rel_folder=os.path.relpath(folder_target,SOURCE_ROOT)
+				if folder_status in('exists','exists_ci'):note=' — nama mirip folder yang sudah ada, tidak dibuat duplikat'if folder_status=='exists_ci'else' — sudah ada, dilewati';print(f"  [33m[Lewati][0m Folder [1;33m{rel_folder}[0m{note}.");continue
+				print(f"  [36m[Buat Folder][0m Folder baru akan dibuat (via :new_folder): [1;36m{rel_folder}[0m");matched_file=folder_target;matched_content='';match_type='new_folder';match_line_no=None;final_match_result=0,0,'new_folder';find_stripped='';filepath=folder_target;path_ok=True;content=''
 			else:
 				if path_ok:
 					stop_ev_m0,t_m0=_spinner_start(f"Mencocokkan blok #{i}/{len(pairs)}...",color='214');result=find_in_content(find_stripped,content,block_label=i);_spinner_stop(stop_ev_m0,t_m0)
@@ -1406,19 +1465,24 @@ def scan_dan_apply(patch_text,dry_run=False):
 							if cand_result:matched_file=cand_fp;matched_content=cand_content;match_type=cand_result[2];match_line_no=_line_from_result(cand_result,matched_content);final_match_result=cand_result
 						if matched_file is None:
 							if not auto_mode and not path_ok and context_for_fail is None:
-								new_dir,new_base=_resolve_create_dir(filename)
+								new_dir,new_base,new_src=_resolve_create_dir(filename,_pending_new_folders)
 								if new_dir is None:print(f"  [31m[BATAL][0m Auto-Create dibatalkan oleh user.");log_fail_event(i,'auto_create_cancelled',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
 								new_filepath=os.path.join(new_dir,new_base)
 								if not _is_path_inside_root(new_filepath):
 									print(f"  [31m[DITOLAK][0m Auto-Create dibatalkan — target di luar folder project: [1m{filename}[0m");print(f"  [GAGAL] Blok #{i} — Kode tidak ditemukan di file manapun.")
 									for pl in find_stripped.splitlines():print(f"          │ {pl}")
 									log_fail_event(i,'auto_create_outside_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
-								rel_new=os.path.relpath(new_filepath,SOURCE_ROOT);print(f"  [36m[Auto-Create][0m File belum ada di project — akan dibuat baru: [1;36m{rel_new}[0m");matched_file=new_filepath;matched_content='';match_type='new_file';match_line_no=None;final_match_result=0,0,'new_file';find_stripped='';filepath=new_filepath;path_ok=True;content=replace_stripped
+								rel_new=os.path.relpath(new_filepath,SOURCE_ROOT)
+								if new_src=='pending_new_folder':_folder_note=' \x1b[38;5;244m(folder tersambung otomatis dari blok :new_folder di patch ini)\x1b[0m'
+								elif new_src=='create_new':_folder_note=' \x1b[38;5;244m(folder baru akan dibuat sesuai path)\x1b[0m'
+								elif new_src=='manual':_folder_note=' \x1b[38;5;244m(folder dipilih manual oleh user)\x1b[0m'
+								else:_folder_note=''
+								print(f"  [36m[Auto-Create][0m File belum ada di project — akan dibuat baru: [1;36m{rel_new}[0m{_folder_note}");matched_file=new_filepath;matched_content='';match_type='new_file';match_line_no=None;final_match_result=0,0,'new_file';find_stripped='';filepath=new_filepath;path_ok=True;content=replace_stripped
 							else:
 								print(f"  [GAGAL] Blok #{i} — Kode tidak ditemukan di file manapun.");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m")
 								for pl in find_stripped.splitlines():print(f"          │ {pl}")
 								log_fail_event(i,'not_found_in_project',filename);failed_blocks.append((filename,find_stripped,replace_stripped,context_for_fail));all_ok=False;continue
-			if match_type.startswith('head_tail')or match_type=='delete_file':replace_mode='first'
+			if match_type.startswith('head_tail')or match_type in('delete_file','new_folder'):replace_mode='first'
 			else:
 				count_exact=matched_content.count(find_stripped);count_total=count_exact if count_exact>0 else 1
 				if count_total>1:replace_mode=tanya_mode_replace(count_total,i)
@@ -1432,6 +1496,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 			elif match_type=='fuzzy_block':method_label=' \x1b[38;5;214m[Fuzzy Block >80%]\x1b[0m'
 			elif match_type=='new_file':method_label=' \x1b[38;5;46m[File Baru — Auto-Create]\x1b[0m'
 			elif match_type=='delete_file':method_label=' \x1b[31m[File Dihapus — via :hapus]\x1b[0m'
+			elif match_type=='new_folder':method_label=' \x1b[38;5;46m[Folder Baru — via :new_folder]\x1b[0m'
 			else:method_label=f" [38;5;244m[{match_type}][0m"
 			rel=os.path.relpath(matched_file,SOURCE_ROOT);line_label=f" [33m(baris {match_line_no})[0m"if match_line_no else'';print(f"  [32m[OK][0m Blok [1m#{i}[0m → [1;36m{rel}[0m{line_label}{method_label}");elapsed_now=time.time()-_GLOBAL_TIMER_START;print(f"      [38;5;244m↳ ⏱  {elapsed_now:.1f}s[0m");c_st,c_en=0,0
 			if final_match_result:
@@ -1451,7 +1516,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 				if ctx:ai_filepath,ai_file_content=ctx
 				elif fname!='__AUTO__':
 					ai_filepath=os.path.join(SOURCE_ROOT,fname)
-					if os.path.exists(ai_filepath):
+					if os.path.isfile(ai_filepath):
 						with open(ai_filepath,'r',encoding='utf-8')as f:ai_file_content=f.read()
 					else:ai_file_content=''
 				else:ai_filepath=None;ai_file_content=''
@@ -1507,6 +1572,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 	stop_ev_pv,t_pv=_spinner_start('Menyusun pratinjau perubahan (menerapkan blok ke memori)...')
 	for(filepath,items)in plan_by_file.items():
 		orig_content=items[0][4]
+		if any(it[5]=='new_folder'for it in items):preview_map[filepath]=[orig_content,'__FOLDER_MARKER__'];continue
 		if any(it[5]=='delete_file'for it in items):preview_map[filepath]=[orig_content,None];continue
 		preview_map[filepath]=[orig_content,orig_content];items_sorted=sorted(items,key=lambda x:x[6],reverse=True);working=orig_content
 		for(_,find,replace,mode,_,mtype,c_start,c_end)in items_sorted:
@@ -1538,8 +1604,9 @@ def scan_dan_apply(patch_text,dry_run=False):
 		preview_map[filepath][1]=working
 	_spinner_stop(stop_ev_pv,t_pv)
 	for(filepath,(lama,baru))in preview_map.items():
-		rel=os.path.relpath(filepath,SOURCE_ROOT);print(f"  📄 {rel}")
+		rel=os.path.relpath(filepath,SOURCE_ROOT);is_folder_preview=baru=='__FOLDER_MARKER__';print(f"  {"📁"if is_folder_preview else"📄"} {rel}")
 		if baru is None:print(f"  [31m[HAPUS][0m File ini akan [1;31mDIHAPUS[0m dari project (via :hapus).")
+		elif is_folder_preview:print(f"  [36m[FOLDER BARU][0m Folder ini akan [1;36mDIBUAT[0m (via :new_folder).")
 		else:tampilkan_diff(lama,baru,filepath)
 		print()
 	print('─'*_sa_sep_w);cfg=load_ai_config()
@@ -1550,6 +1617,7 @@ def scan_dan_apply(patch_text,dry_run=False):
 			for(filepath,(_,baru))in preview_map.items():
 				rel=os.path.relpath(filepath,SOURCE_ROOT)
 				if baru is None:print(f"  [38;5;244m[LEWATI][0m {rel} — dilewati (file akan dihapus).");continue
+				if baru=='__FOLDER_MARKER__':print(f"  [38;5;244m[LEWATI][0m {rel} — dilewati (folder baru, bukan isi kode).");continue
 				stop_ev_c,tc=_spinner_start(f"Menganalisis struktur syntax {rel}...",color='33');hasil_cek=cek_syntax_ai(baru,rel);_spinner_stop(stop_ev_c,tc)
 				if hasil_cek=='SKIP':print(f"  [33m[SKIP][0m Pengecekan dilewati (API key belum diatur) untuk {rel}")
 				elif hasil_cek.startswith('SKIP_ERR_HTTP:')or hasil_cek.startswith('SKIP_ERR_NET:'):_alasan=hasil_cek.split(':',1)[1].strip();print(f"  [33m[SKIP][0m Pengecekan dilewati untuk {rel} — gagal konek ke AI: {_alasan}")
@@ -1573,6 +1641,11 @@ def scan_dan_apply(patch_text,dry_run=False):
 				try:os.remove(filepath);session_files.append({'rel':rel,'deleted':True});print(f"  [31m[OK][0m {rel} — file berhasil dihapus.")
 				except Exception as _e:print(f"  [31m[GAGAL][0m {rel} — gagal dihapus: {_e}")
 			else:print(f"  [33m[SKIP][0m {rel} — file sudah tidak ada, tidak perlu dihapus.")
+			continue
+		if new_content=='__FOLDER_MARKER__':
+			if not _is_path_inside_root(filepath):print(f"  [31m[DITOLAK][0m {rel} — path di luar folder project, TIDAK dibuat.");continue
+			try:os.makedirs(filepath,exist_ok=True);session_files.append({'rel':rel,'folder':True});print(f"  [36m[OK][0m {rel} — folder baru berhasil dibuat.")
+			except Exception as _e:print(f"  [31m[GAGAL][0m {rel} — gagal membuat folder: {_e}")
 			continue
 		if _self_tool:
 			ok_syntax,syntax_err=_validate_python_syntax(filepath,new_content)
@@ -2035,7 +2108,7 @@ def _restore_semua_commit():
 			input('\n  Tekan Enter untuk lanjut...');sys.stdout.write('\x1b[?1049h\x1b[?25l');sys.stdout.flush();_first_draw=True
 		elif k in('ESC','q','Q','0'):break
 	sys.stdout.write('\x1b[?25h');sys.stdout.flush()
-PROMPT_AI='Gunakan format Find & Replace untuk semua perubahan kode.\n\nPENTING:\n\n- Kirim SEMUA perubahan hanya dalam SATU BLOK KODE ("text ... ") agar bisa langsung saya copy sekali.\n- Jangan memecah menjadi beberapa blok kode.\n- Jangan mengirim seluruh file, hanya bagian yang perlu diubah.\n- Jika ada banyak file atau banyak perubahan, gabungkan semuanya di dalam blok kode yang sama.\n- Di baris PALING ATAS (sebelum ":file" pertama), tambahkan SATU baris ":title <judul singkat perubahan>" yang merangkum perubahan pada patch ini.\n\nFormat untuk MENGEDIT File (Wajib digunakan):\n\n:title Judul singkat perubahan (dipakai sebagai nama commit)\n\n:file path/ke/file.js\n:find\nkode lama yang ada di file (tulis persis seperti aslinya)\n:end_find\n:replace\nkode baru penggantinya\n:end_replace\n\nFormat untuk MEMBUAT File Baru (Gunakan :new_file):\n\n:file path/ke/NewFile.js\n:new_file\n:replace\nseluruh isi kode file baru\n:end_replace\n\nJika file benar-benar baru, gunakan ":new_file". Jangan mengisi ":find" dengan kode palsu, placeholder, atau potongan kode generik.\n\nFormat untuk MENGHAPUS File (Gunakan :hapus):\n\n:file path/ke/FileLama.js\n:hapus\n\nGunakan ":hapus" hanya untuk file yang benar-benar ada di project. Tidak perlu blok ":find" atau ":replace" — cukup taruh ":hapus" tepat setelah ":file <path>".\n\nAturan Tambahan:\n\n- Bagian ":find" harus berisi kode yang benar-benar ada di file.\n- Jika menambahkan kode baru di file yang sudah ada, gunakan ":find" pada bagian sebelum/sesudah lokasi penyisipan agar posisi penambahan jelas.\n- Pertahankan indentasi dan formatting asli file.\n- Jangan memberi penjelasan panjang di antara perubahan.\n\nJika blok ":find" terlalu panjang, gunakan format head...tail dengan penanda skip:\n\n:find\n5 baris pertama dari blok asli\n:skip\n5 baris terakhir dari blok asli\n:end_find\n:replace\nkode pengganti lengkap\n:end_replace\n\nWAJIB: baris ":skip" harus berdiri SENDIRI di baris tersendiri. Jangan gunakan "..." biasa.\n\nWAJIB DIPATUHI:\n- Seluruh output Find & Replace harus berada dalam SATU BLOK KODE.\n- Tidak boleh ada blok kode kedua.\n- Tidak boleh ada potongan Find & Replace di luar blok kode tersebut.'
+PROMPT_AI='Gunakan format Find & Replace untuk SEMUA perubahan kode.\n\nWAJIB:\n- Seluruh hasil patch HARUS berada dalam TEPAT SATU blok kode.\n- Blok kode harus menggunakan format ```text.\n- Semua perubahan dari semua file digabung dalam SATU blok kode.\n- Tidak boleh ada kode, patch, atau bagian patch di luar blok kode.\n- Jangan membuat blok kode kedua.\n- Hasil harus bisa langsung di-COPY SEKALIGUS.\n- Sebelum mengirim, pastikan hanya ada SATU blok kode dan seluruh patch berada di dalamnya.\n- Jangan kirim seluruh file yang sudah ada. Hanya bagian yang perlu diubah.\n- Pertahankan indentasi dan formatting asli.\n- Jangan memberi penjelasan panjang di dalam atau di luar patch.\n\nBARIS PERTAMA:\n:title <judul singkat perubahan>\n\nEDIT FILE:\n:file path/ke/file\n:find\n<kode lama yang BENAR-BENAR ada di file>\n:end_find\n:replace\n<kode baru>\n:end_replace\n\nFILE BARU:\n:file path/ke/NewFile\n:new_file\n:replace\n<seluruh isi file baru>\n:end_replace\n\nFOLDER BARU:\n:file path/ke/folder/baru\n:new_folder\n\nHAPUS FILE:\n:file path/ke/FileLama\n:hapus\n\nJIKA :find TERLALU PANJANG:\n:find\n<5 baris pertama kode asli>\n:skip\n<5 baris terakhir kode asli>\n:end_find\n:replace\n<kode pengganti lengkap>\n:end_replace\n\nATURAN :find:\n- Harus benar-benar cocok dengan kode yang ada di file.\n- Jangan membuat kode palsu, placeholder, atau potongan generik.\n- Untuk menambahkan kode, gunakan :find pada bagian tepat sebelum atau sesudah lokasi penyisipan.\n- Jika beberapa bagian dalam satu file berubah, gunakan beberapa pasangan :find/:replace.\n- Jika beberapa file berubah, gabungkan semuanya dalam blok kode yang sama.\n\nATURAN :skip:\n- :skip harus berdiri sendiri pada satu baris.\n- Jangan menggunakan "..." sebagai pengganti :skip.\n\nATURAN :new_file:\n- Hanya gunakan jika file benar-benar belum ada.\n- Jangan gunakan :find untuk file baru.\n\nATURAN :hapus:\n- Hanya gunakan jika file benar-benar ada.\n- Tidak perlu :find atau :replace.\n\nCHECK SEBELUM MENGIRIM:\n1. Apakah ada tepat SATU blok kode? Jika tidak, perbaiki.\n2. Apakah seluruh patch berada di dalam blok tersebut? Jika tidak, perbaiki.\n3. Apakah ada kode/patch di luar blok? Jika ada, pindahkan ke dalam blok.\n4. Apakah setiap :find benar-benar berasal dari file? Jika tidak, perbaiki.\n5. Apakah semua perubahan dari semua file sudah digabung? Jika belum, gabungkan.\n6. Apakah hasil bisa langsung di-COPY SEKALIGUS? Jika belum, perbaiki.\n\nHASIL AKHIR WAJIB:\nSatu blok kode saja yang berisi seluruh patch dan dapat langsung di-COPY dalam sekali tindakan.'
 def test_api_key_validity(provider,model,key,local_url_override=None):
 	cfg=load_ai_config();local_url=cfg.get('local_url','').strip();PROVIDER_URLS={'openai':'https://api.openai.com/v1/chat/completions','groq':'https://api.groq.com/openai/v1/chat/completions','openrouter':'https://openrouter.ai/api/v1/chat/completions','local':local_url if local_url else'http://127.0.0.1:4891/v1/chat/completions'};api_url=PROVIDER_URLS.get(provider,PROVIDER_URLS['openai'])
 	if provider=='local'and(local_url_override or'').strip():api_url=local_url_override.strip()
