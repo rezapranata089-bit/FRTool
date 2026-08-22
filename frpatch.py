@@ -321,7 +321,7 @@ def _write_frignore_raw(entries):
 	frignore_path=os.path.join(SOURCE_ROOT,'.frignore')
 	try:
 		with open(frignore_path,'w',encoding='utf-8')as f:
-			f.write('# Folder/ekstensi tambahan yang di-skip FR Tool saat scan & patch\n');f.write('# Format: satu nama folder per baris, atau *.ext untuk ekstensi\n')
+			f.write('# Folder/ekstensi tambahan yang di-skip FR Tool saat scan & patch\n');f.write('# Format: satu nama folder per baris, atau *.ext untuk ekstensi\n');f.write('#\n');f.write('# BAWAAN TOOL (selalu di-skip, sudah otomatis - tidak perlu ditulis manual):\n');f.write('#   folder : '+', '.join(sorted(BASE_IGNORE_DIRS))+'\n');f.write('#   ekstensi: '+', '.join(sorted(BASE_IGNORE_EXTS))+'\n');f.write('#\n');f.write('# Tambahan kamu (baris di bawah ini yang aktif dibaca tool):\n')
 			for e in entries:f.write(e+'\n')
 	except Exception:pass
 def load_frignore():
@@ -2540,7 +2540,9 @@ def kelola_folder_exclude():
 	while True:
 		tsize=_term_size();term_cols,term_lines=tsize.columns,tsize.lines
 		if term_cols<MIN_TERM_COLS or term_lines<MIN_TERM_LINES:warn=['','  \x1b[1;38;5;196m⚠  Layar terlalu kecil / zoom terlalu dalam\x1b[0m',f"  [38;5;{C_GRAY}mMinimal {MIN_TERM_COLS} kolom x {MIN_TERM_LINES} baris[0m",f"  [38;5;{C_GRAY}mSaat ini   : {term_cols} kolom x {term_lines} baris[0m",'',f"  [38;5;{C_DGRAY}mPerbesar (zoom out) tampilan terminal, lalu tekan tombol apa saja...[0m",''];sys.stdout.write('\x1b[?2026h\x1b[2J\x1b[3J\x1b[H'+'\n'.join(line+'\x1b[K'for line in warn)+'\x1b[0J\x1b[?2026l');sys.stdout.flush();get_key();continue
-		clear();M=header('Kelola Exclude');entries=_read_frignore_raw();print(f"{M}  [1mBAWAAN TOOL (selalu di-skip, tidak bisa dihapus):[0m");print(f"{M}  [38;5;{C_GRAY}m{", ".join(sorted(BASE_IGNORE_DIRS))}[0m");print();print(f"{M}  [1mTAMBAHAN KAMU (disimpan di .frignore):[0m")
+		clear();M=header('Kelola Exclude');frignore_path=os.path.join(SOURCE_ROOT,'.frignore')
+		if not os.path.exists(frignore_path):_write_frignore_raw([])
+		entries=_read_frignore_raw();print(f"{M}  [1mBAWAAN TOOL (selalu di-skip, tidak bisa dihapus):[0m");print(f"{M}  [38;5;{C_GRAY}m{", ".join(sorted(BASE_IGNORE_DIRS))}[0m");print();print(f"{M}  [1mTAMBAHAN KAMU (disimpan di .frignore):[0m")
 		if entries:
 			for(i,e)in enumerate(entries,1):jenis='ekstensi'if e.startswith('*.')else'folder';print(f"{M}  {i}. [36m{e}[0m [38;5;{C_DGRAY}m({jenis})[0m")
 		else:print(f"{M}  [38;5;{C_DGRAY}m(belum ada folder/ekstensi tambahan)[0m")
