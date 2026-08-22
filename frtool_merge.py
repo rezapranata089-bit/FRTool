@@ -25,6 +25,14 @@ HISTORY_PATH = os.path.expanduser("~/.frtool_merge_history.json")
 
 DEFAULT_EXTS = ['kt', 'xml', 'json', 'js', 'css', 'kts', 'pro', 'gradle', 'toml', 'java']
 
+EXT_TEMPLATES = {
+    '1': ('Kotlin / Android', ['kt', 'xml', 'json', 'kts', 'pro', 'gradle', 'toml', 'java']),
+    '2': ('Flutter / Dart', ['dart', 'yaml', 'yml', 'json', 'gradle', 'kts', 'xml', 'plist', 'kt', 'java', 'properties', 'pro', 'frag', 'vert', 'arb']),
+    '3': ('HTML / Web', ['html', 'css', 'js', 'json', 'ts', 'jsx', 'tsx']),
+    '4': ('Python', ['py', 'json', 'toml', 'cfg', 'ini', 'txt']),
+    '5': ('Node / JS Backend', ['js', 'ts', 'json', 'env', 'yml', 'yaml']),
+}
+
 JSON_MAX_SIZE = 50 * 1024  # 50 KB — file .json di atas ini dilewati
 
 IGNORE_DIRS = {
@@ -135,23 +143,52 @@ def _ask_folder(default_root):
 
 def _ask_extensions():
     default_str = ','.join(DEFAULT_EXTS)
-    print(f"\n  \033[1mEkstensi file yang disertakan\033[0m (pisah koma)")
+    print(f"\n  \033[1mPilih template ekstensi\033[0m")
+    for key in sorted(EXT_TEMPLATES.keys()):
+        label, exts = EXT_TEMPLATES[key]
+        print(f"    [{key}] {label} ({', '.join(exts)})")
+    print(f"    [d] Default lama ({default_str})")
+    print(f"    [c] Ketik manual (pisah koma)")
     print(f"  Kosongkan lalu Enter untuk pakai default: {default_str}")
     try:
-        raw = input("  Ekstensi: ").strip()
+        raw = input("  Pilihan: ").strip()
     except (EOFError, KeyboardInterrupt):
         raw = ''
-    if not raw:
+    if not raw or raw.lower() == 'd':
         return list(DEFAULT_EXTS)
+    if raw in EXT_TEMPLATES:
+        return list(EXT_TEMPLATES[raw][1])
+    if raw.lower() == 'c':
+        try:
+            raw2 = input("  Ekstensi: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raw2 = ''
+        if not raw2:
+            return list(DEFAULT_EXTS)
+        exts = [e.strip().lower().lstrip('.') for e in raw2.split(',') if e.strip()]
+        return exts or list(DEFAULT_EXTS)
     exts = [e.strip().lower().lstrip('.') for e in raw.split(',') if e.strip()]
     return exts or list(DEFAULT_EXTS)
+
+
+def _scan_all_entries(root):
+    """Scan SEMUA file di folder (tanpa filter ekstensi) khusus untuk tree structure lengkap."""
+    all_files = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
+        for fname in sorted(filenames):
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, root)
+            all_files.append((rel, full))
+    all_files.sort(key=lambda x: x[0])
+    return all_files
 
 
 def _scan_files(root, exts):
     ext_set = {e.lower() for e in exts}
     matched = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS and not d.startswith('.'))
+        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
         for fname in sorted(filenames):
             ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
             if ext in ext_set:
@@ -237,7 +274,8 @@ def run_menu(default_root=None):
         input("\n  Tekan Enter untuk kembali ke menu...")
         return
 
-    tree_text = _build_file_tree(files, root)
+    all_entries = _scan_all_entries(root)
+    tree_text = _build_file_tree(all_entries, root)
 
     merged_text, skipped = _build_merged_text(files)
     merged_text = f"### PROJECT STRUCTURE\n{tree_text}\n\n{merged_text}"
