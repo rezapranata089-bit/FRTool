@@ -1341,7 +1341,8 @@ def scan_dan_apply(patch_text,dry_run=False):
 		if not auto_mode and is_folder_only:filepath=os.path.join(SOURCE_ROOT,filename)
 		elif not auto_mode:
 			filepath=os.path.join(SOURCE_ROOT,filename);path_ok=os.path.exists(filepath)
-			if path_ok:
+			if path_ok and os.path.isdir(filepath):content=''
+			elif path_ok:
 				with open(filepath,'r',encoding='utf-8')as f:content=f.read()
 			else:
 				suffix_hits=_resolve_path_by_suffix(filename,SOURCE_ROOT)
@@ -1637,7 +1638,12 @@ def scan_dan_apply(patch_text,dry_run=False):
 		rel=os.path.relpath(filepath,SOURCE_ROOT)
 		if new_content is None:
 			if not _is_path_inside_root(filepath):print(f"  [31m[DITOLAK][0m {rel} — path di luar folder project, TIDAK dihapus.");continue
-			if os.path.exists(filepath):
+			if os.path.isdir(filepath):
+				_real_target=os.path.realpath(filepath);_real_root=os.path.realpath(SOURCE_ROOT)
+				if _real_target==_real_root or os.path.basename(_real_target)=='.git':print(f"  [31m[DITOLAK][0m {rel} — folder root project / .git tidak boleh dihapus.");continue
+				try:shutil.rmtree(filepath);session_files.append({'rel':rel,'deleted':True});print(f"  [31m[OK][0m {rel} — folder berhasil dihapus.")
+				except Exception as _e:print(f"  [31m[GAGAL][0m {rel} — gagal menghapus folder: {_e}")
+			elif os.path.exists(filepath):
 				try:os.remove(filepath);session_files.append({'rel':rel,'deleted':True});print(f"  [31m[OK][0m {rel} — file berhasil dihapus.")
 				except Exception as _e:print(f"  [31m[GAGAL][0m {rel} — gagal dihapus: {_e}")
 			else:print(f"  [33m[SKIP][0m {rel} — file sudah tidak ada, tidak perlu dihapus.")
