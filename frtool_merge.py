@@ -1,314 +1,136 @@
 #!/usr/bin/env python3
-"""
-frtool_merge.py — Plugin OPSIONAL untuk FR Tool.
-
-Fitur "Gabung Kode": scan semua file kode di sebuah folder project,
-gabungkan isinya jadi satu teks dengan format jelas (path file, nama,
-pembatas antar file), lalu otomatis disalin ke clipboard.
-
-Modul ini SENGAJA berdiri sendiri (tidak import frtool.py) supaya:
-  - frtool.py bisa mengimpornya secara opsional (try/except) tanpa risiko
-    circular import atau menjalankan ulang kode inti frtool.py.
-  - Kalau file ini dihapus/rusak, frtool.py tetap berjalan normal dan
-    menu terkait otomatis hilang.
-
-Entry point yang dipanggil dari frtool.py: run_menu(default_root=None)
-"""
-
-import os
-import sys
-import json
-import subprocess
+import os,sys,json,subprocess
 from datetime import datetime
-
-HISTORY_PATH = os.path.expanduser("~/.frtool_merge_history.json")
-
-DEFAULT_EXTS = ['kt', 'xml', 'json', 'js', 'css', 'kts', 'pro', 'gradle', 'toml', 'java']
-
-EXT_TEMPLATES = {
-    '1': ('Kotlin / Android', ['kt', 'xml', 'json', 'kts', 'pro', 'gradle', 'toml', 'java']),
-    '2': ('Flutter / Dart', ['dart', 'yaml', 'yml', 'json', 'gradle', 'kts', 'xml', 'plist', 'kt', 'java', 'properties', 'pro', 'frag', 'vert', 'arb']),
-    '3': ('HTML / Web', ['html', 'css', 'js', 'json', 'ts', 'jsx', 'tsx']),
-    '4': ('Python', ['py', 'json', 'toml', 'cfg', 'ini', 'txt']),
-    '5': ('Node / JS Backend', ['js', 'ts', 'json', 'env', 'yml', 'yaml']),
-}
-
-JSON_MAX_SIZE = 50 * 1024  # 50 KB — file .json di atas ini dilewati
-
-IGNORE_DIRS = {
-    '.git', '.gradle', '.idea', 'build', '.kotlin', 'captures', '.cxx',
-    'node_modules', '__pycache__', '.venv', 'venv', '.next', 'dist',
-    '.vercel', '.cache', '.turbo', '.patch_backups',
-}
-
-SEP_WIDTH = 80
-
-
-def _clear():
-    sys.stdout.write('\033[2J\033[H')
-    sys.stdout.flush()
-
-
+HISTORY_PATH=os.path.expanduser('~/.frtool_merge_history.json')
+DEFAULT_EXTS=['kt','xml','json','js','css','kts','pro','gradle','toml','java']
+EXT_TEMPLATES={'1':('Kotlin / Android',['kt','xml','json','kts','pro','gradle','toml','java']),'2':('Flutter / Dart',['dart','yaml','yml','json','gradle','kts','xml','plist','kt','java','properties','pro','frag','vert','arb']),'3':('HTML / Web',['html','css','js','json','ts','jsx','tsx']),'4':('Python',['py','json','toml','cfg','ini','txt']),'5':('Node / JS Backend',['js','ts','json','env','yml','yaml'])}
+JSON_MAX_SIZE=51200
+IGNORE_DIRS={'.git','.gradle','.idea','build','.kotlin','captures','.cxx','node_modules','__pycache__','.venv','venv','.next','dist','.vercel','.cache','.turbo','.patch_backups'}
+SEP_WIDTH=80
+CLIPBOARD_DIR='/storage/emulated/0/ClipBoard'
+CLIPBOARD_MAX_CHARS=500000
+def _save_to_clipboard_folder(text,root):
+	A=os.path.basename(root.rstrip(os.sep))or'project';A=''.join(A if A.isalnum()or A in'-_.'else'_'for A in A);E=datetime.now().strftime('%Y%m%d_%H%M%S');B=CLIPBOARD_DIR
+	if not os.path.isdir(os.path.dirname(CLIPBOARD_DIR)):B=os.path.expanduser('~/ClipBoard');print(f"  [33m[PERINGATAN][0m Storage Android tidak terbaca, simpan ke {B}")
+	try:
+		C=os.path.join(B,A);os.makedirs(C,exist_ok=True);D=os.path.join(C,f"merge_{E}.txt")
+		with open(D,'w',encoding='utf-8')as F:F.write(text)
+		return D,None
+	except Exception as G:return None,str(G)
+def _clear():sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush()
 def _load_history():
-    if os.path.exists(HISTORY_PATH):
-        try:
-            with open(HISTORY_PATH, 'r') as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
-
-
+	if os.path.exists(HISTORY_PATH):
+		try:
+			with open(HISTORY_PATH,'r')as A:return json.load(A)
+		except Exception:pass
+	return[]
 def _save_history(path):
-    if not path or not os.path.isdir(path):
-        return
-    hist = _load_history()
-    if path in hist:
-        hist.remove(path)
-    hist.insert(0, path)
-    hist = hist[:5]
-    try:
-        with open(HISTORY_PATH, 'w') as f:
-            json.dump(hist, f, indent=2)
-    except Exception:
-        pass
-
-
+	B=path
+	if not B or not os.path.isdir(B):return
+	A=_load_history()
+	if B in A:A.remove(B)
+	A.insert(0,B);A=A[:5]
+	try:
+		with open(HISTORY_PATH,'w')as C:json.dump(A,C,indent=2)
+	except Exception:pass
 def _copy_to_clipboard(text):
-    """Salin teks ke clipboard. Mendukung Termux, xclip, xsel, Windows, macOS."""
-    cmds = [
-        ['termux-clipboard-set'],
-        ['xclip', '-selection', 'clipboard'],
-        ['xsel', '--clipboard', '--input'],
-        ['clip.exe'],
-        ['pbcopy'],
-    ]
-    for cmd in cmds:
-        try:
-            r = subprocess.run(cmd, input=text.encode('utf-8'), timeout=5,
-                                capture_output=True)
-            if r.returncode == 0:
-                return True
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            continue
-    return False
-
-
+	A=[['termux-clipboard-set'],['xclip','-selection','clipboard'],['xsel','--clipboard','--input'],['clip.exe'],['pbcopy']]
+	for B in A:
+		try:
+			C=subprocess.run(B,input=text.encode('utf-8'),timeout=5,capture_output=True)
+			if C.returncode==0:return True
+		except(FileNotFoundError,subprocess.TimeoutExpired,OSError):continue
+	return False
 def _ask_folder(default_root):
-    history = [p for p in _load_history() if p != default_root]
-
-    print("  \033[1mPilih folder project yang mau di-scan:\033[0m\n")
-    options = []
-    if default_root:
-        print(f"    [0] Direktori aktif saat ini: {default_root}")
-        options.append(default_root)
-    for i, p in enumerate(history, start=1):
-        print(f"    [{i}] {p}")
-        options.append(p)
-    print(f"    [m] Ketik path baru")
-    print(f"    [q] Batal\n")
-
-    try:
-        pilih = input("  Pilihan: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
-
-    if pilih == '' and default_root:
-        return default_root
-    if pilih.lower() in ('q', 'batal'):
-        return None
-    if pilih.lower() == 'm':
-        try:
-            path = input("  Masukkan path folder: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if not path:
-            return None
-        path = os.path.abspath(os.path.expanduser(path))
-        if not os.path.isdir(path):
-            print(f"\n  \033[31m[GAGAL]\033[0m Folder tidak ditemukan: {path}")
-            input("\n  Tekan Enter untuk kembali...")
-            return None
-        return path
-    if pilih.isdigit():
-        idx = int(pilih)
-        if idx == 0 and default_root:
-            return default_root
-        if 1 <= idx <= len(history):
-            return history[idx - 1]
-    print("\n  \033[31m[GAGAL]\033[0m Pilihan tidak dikenal.")
-    input("\n  Tekan Enter untuk kembali...")
-    return None
-
-
+	A=default_root;D=[B for B in _load_history()if B!=A];print('  \x1b[1mPilih folder project yang mau di-scan:\x1b[0m\n');F=[]
+	if A:print(f"    [0] Direktori aktif saat ini: {A}");F.append(A)
+	for(H,G)in enumerate(D,start=1):print(f"    [{H}] {G}");F.append(G)
+	print(f"    [m] Ketik path baru");print(f"    [q] Batal\n")
+	try:C=input('  Pilihan: ').strip()
+	except(EOFError,KeyboardInterrupt):return
+	if C==''and A:return A
+	if C.lower()in('q','batal'):return
+	if C.lower()=='m':
+		try:B=input('  Masukkan path folder: ').strip()
+		except(EOFError,KeyboardInterrupt):return
+		if not B:return
+		B=os.path.abspath(os.path.expanduser(B))
+		if not os.path.isdir(B):print(f"\n  [31m[GAGAL][0m Folder tidak ditemukan: {B}");input('\n  Tekan Enter untuk kembali...');return
+		return B
+	if C.isdigit():
+		E=int(C)
+		if E==0 and A:return A
+		if 1<=E<=len(D):return D[E-1]
+	print('\n  \x1b[31m[GAGAL]\x1b[0m Pilihan tidak dikenal.');input('\n  Tekan Enter untuk kembali...')
 def _ask_extensions():
-    default_str = ','.join(DEFAULT_EXTS)
-    print(f"\n  \033[1mPilih template ekstensi\033[0m")
-    for key in sorted(EXT_TEMPLATES.keys()):
-        label, exts = EXT_TEMPLATES[key]
-        print(f"    [{key}] {label} ({', '.join(exts)})")
-    print(f"    [d] Default lama ({default_str})")
-    print(f"    [c] Ketik manual (pisah koma)")
-    print(f"  Kosongkan lalu Enter untuk pakai default: {default_str}")
-    try:
-        raw = input("  Pilihan: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        raw = ''
-    if not raw or raw.lower() == 'd':
-        return list(DEFAULT_EXTS)
-    if raw in EXT_TEMPLATES:
-        return list(EXT_TEMPLATES[raw][1])
-    if raw.lower() == 'c':
-        try:
-            raw2 = input("  Ekstensi: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raw2 = ''
-        if not raw2:
-            return list(DEFAULT_EXTS)
-        exts = [e.strip().lower().lstrip('.') for e in raw2.split(',') if e.strip()]
-        return exts or list(DEFAULT_EXTS)
-    exts = [e.strip().lower().lstrip('.') for e in raw.split(',') if e.strip()]
-    return exts or list(DEFAULT_EXTS)
-
-
+	D=','.join(DEFAULT_EXTS);print(f"\n  [1mPilih template ekstensi[0m")
+	for E in sorted(EXT_TEMPLATES.keys()):F,B=EXT_TEMPLATES[E];print(f"    [{E}] {F} ({", ".join(B)})")
+	print(f"    [d] Default lama ({D})");print(f"    [c] Ketik manual (pisah koma)");print(f"  Kosongkan lalu Enter untuk pakai default: {D}")
+	try:A=input('  Pilihan: ').strip()
+	except(EOFError,KeyboardInterrupt):A=''
+	if not A or A.lower()=='d':return list(DEFAULT_EXTS)
+	if A in EXT_TEMPLATES:return list(EXT_TEMPLATES[A][1])
+	if A.lower()=='c':
+		try:C=input('  Ekstensi: ').strip()
+		except(EOFError,KeyboardInterrupt):C=''
+		if not C:return list(DEFAULT_EXTS)
+		B=[A.strip().lower().lstrip('.')for A in C.split(',')if A.strip()];return B or list(DEFAULT_EXTS)
+	B=[A.strip().lower().lstrip('.')for A in A.split(',')if A.strip()];return B or list(DEFAULT_EXTS)
 def _scan_all_entries(root):
-    """Scan SEMUA file di folder (tanpa filter ekstensi) khusus untuk tree structure lengkap."""
-    all_files = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
-        for fname in sorted(filenames):
-            full = os.path.join(dirpath, fname)
-            rel = os.path.relpath(full, root)
-            all_files.append((rel, full))
-    all_files.sort(key=lambda x: x[0])
-    return all_files
-
-
-def _scan_files(root, exts):
-    ext_set = {e.lower() for e in exts}
-    matched = []
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in IGNORE_DIRS)
-        for fname in sorted(filenames):
-            ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
-            if ext in ext_set:
-                full = os.path.join(dirpath, fname)
-                rel = os.path.relpath(full, root)
-                matched.append((rel, full))
-    matched.sort(key=lambda x: x[0])
-    return matched
-
-
+	A=[]
+	for(D,B,E)in os.walk(root):
+		B[:]=sorted(A for A in B if A not in IGNORE_DIRS)
+		for F in sorted(E):C=os.path.join(D,F);G=os.path.relpath(C,root);A.append((G,C))
+	A.sort(key=lambda x:x[0]);return A
+def _scan_files(root,exts):
+	E={A.lower()for A in exts};A=[]
+	for(F,C,G)in os.walk(root):
+		C[:]=sorted(A for A in C if A not in IGNORE_DIRS)
+		for B in sorted(G):
+			H=B.rsplit('.',1)[-1].lower()if'.'in B else''
+			if H in E:D=os.path.join(F,B);I=os.path.relpath(D,root);A.append((I,D))
+	A.sort(key=lambda x:x[0]);return A
 def _build_merged_text(files):
-    parts = []
-    skipped = []
-    for rel, full in files:
-        ext = rel.rsplit('.', 1)[-1].lower() if '.' in rel else ''
-        if ext == 'json':
-            try:
-                size = os.path.getsize(full)
-            except Exception as e:
-                skipped.append((rel, str(e)))
-                continue
-            if size > JSON_MAX_SIZE:
-                skipped.append((rel, f"json > {JSON_MAX_SIZE // 1024}KB, dilewati"))
-                continue
-        try:
-            with open(full, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-        except Exception as e:
-            skipped.append((rel, str(e)))
-            continue
-        parts.append(f"### FILE: {rel}\n{content}")
-    return "\n\n".join(parts), skipped
-
-
-def _build_file_tree(files, root):
-    """Bangun representasi tree sederhana dari daftar file (path relatif)."""
-    tree = {}
-    for rel, _ in files:
-        parts = rel.split(os.sep)
-        node = tree
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        node.setdefault(parts[-1], None)
-
-    root_name = os.path.basename(root.rstrip(os.sep)) or root
-    lines = [root_name]
-
-    def _render(node, prefix=""):
-        entries = sorted(node.items(), key=lambda kv: (kv[1] is None, kv[0].lower()))
-        count = len(entries)
-        for i, (name, child) in enumerate(entries):
-            is_last = (i == count - 1)
-            connector = "└── " if is_last else "├── "
-            lines.append(prefix + connector + name)
-            if child is not None:
-                extension = "    " if is_last else "│   "
-                _render(child, prefix + extension)
-
-    _render(tree)
-    return "\n".join(lines)
-
-
+	D=[];B=[]
+	for(A,E)in files:
+		F=A.rsplit('.',1)[-1].lower()if'.'in A else''
+		if F=='json':
+			try:G=os.path.getsize(E)
+			except Exception as C:B.append((A,str(C)));continue
+			if G>JSON_MAX_SIZE:B.append((A,f"json > {JSON_MAX_SIZE//1024}KB, dilewati"));continue
+		try:
+			with open(E,'r',encoding='utf-8',errors='replace')as H:I=H.read()
+		except Exception as C:B.append((A,str(C)));continue
+		D.append(f"### FILE: {A}\n{I}")
+	return'\n\n'.join(D),B
+def _build_file_tree(files,root):
+	B={}
+	for(F,I)in files:
+		C=F.split(os.sep);A=B
+		for G in C[:-1]:A=A.setdefault(G,{})
+		A.setdefault(C[-1],None)
+	H=os.path.basename(root.rstrip(os.sep))or root;D=[H]
+	def E(node,prefix=''):
+		A=prefix;B=sorted(node.items(),key=lambda kv:(kv[1]is None,kv[0].lower()));G=len(B)
+		for(H,(I,C))in enumerate(B):
+			F=H==G-1;J='└── 'if F else'├── ';D.append(A+J+I)
+			if C is not None:K='    'if F else'│   ';E(C,A+K)
+	E(B);return'\n'.join(D)
 def run_menu(default_root=None):
-    _clear()
-    print("  \033[1;38;5;213m╔══════════════════════════════════════╗\033[0m")
-    print("  \033[1;38;5;213m║           GABUNG KODE PROJECT          ║\033[0m")
-    print("  \033[1;38;5;213m╚══════════════════════════════════════╝\033[0m\n")
-
-    root = _ask_folder(default_root)
-    if not root:
-        return
-
-    _save_history(root)
-
-    exts = _ask_extensions()
-
-    print(f"\n  Memindai folder: {root}")
-    print(f"  Ekstensi: {', '.join(exts)}\n")
-
-    files = _scan_files(root, exts)
-    if not files:
-        print("  \033[33m[INFO]\033[0m Tidak ada file yang cocok dengan ekstensi tersebut.")
-        input("\n  Tekan Enter untuk kembali ke menu...")
-        return
-
-    all_entries = _scan_all_entries(root)
-    tree_text = _build_file_tree(all_entries, root)
-
-    merged_text, skipped = _build_merged_text(files)
-    merged_text = f"### PROJECT STRUCTURE\n{tree_text}\n\n{merged_text}"
-
-    total_files = len(files) - len(skipped)
-    total_chars = len(merged_text)
-    total_lines = merged_text.count('\n') + 1
-
-    print(f"  \033[32m[OK]\033[0m {total_files} file digabungkan "
-          f"({total_lines} baris, {total_chars:,} karakter).")
-    if skipped:
-        print(f"  \033[33m[SKIP]\033[0m {len(skipped)} file dilewati:")
-        for rel, err in skipped[:5]:
-            print(f"         - {rel} ({err})")
-        if len(skipped) > 5:
-            print(f"         ... dan {len(skipped) - 5} lainnya")
-
-    copied = _copy_to_clipboard(merged_text)
-    if copied:
-        print("\n  \033[32m[OK]\033[0m Hasil gabungan telah disalin ke clipboard.")
-    else:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fallback_path = os.path.join(root, f"frtool_merge_{ts}.txt")
-        try:
-            with open(fallback_path, 'w', encoding='utf-8') as f:
-                f.write(merged_text)
-            print(f"\n  \033[33m[INFO]\033[0m Clipboard tidak tersedia.")
-            print(f"  Hasil gabungan disimpan ke file:\n    {fallback_path}")
-        except Exception as e:
-            print(f"\n  \033[31m[GAGAL]\033[0m Clipboard tidak tersedia dan gagal menyimpan file: {e}")
-
-    input("\n  Tekan Enter untuk kembali ke menu...")
-
-
-if __name__ == "__main__":
-    run_menu(default_root=os.getcwd())
+	_clear();print('  \x1b[1;38;5;213m╔══════════════════════════════════════╗\x1b[0m');print('  \x1b[1;38;5;213m║           GABUNG KODE PROJECT          ║\x1b[0m');print('  \x1b[1;38;5;213m╚══════════════════════════════════════╝\x1b[0m\n');A=_ask_folder(default_root)
+	if not A:return
+	_save_history(A);E=_ask_extensions();print(f"\n  Memindai folder: {A}");print(f"  Ekstensi: {", ".join(E)}\n");D=_scan_files(A,E)
+	if not D:print('  \x1b[33m[INFO]\x1b[0m Tidak ada file yang cocok dengan ekstensi tersebut.');input('\n  Tekan Enter untuk kembali ke menu...');return
+	I=_scan_all_entries(A);J=_build_file_tree(I,A);B,C=_build_merged_text(D);B=f"### PROJECT STRUCTURE\n{J}\n\n{B}";K=len(D)-len(C);F=len(B);L=B.count('\n')+1;print(f"  [32m[OK][0m {K} file digabungkan ({L} baris, {F:,} karakter).")
+	if C:
+		print(f"  [33m[SKIP][0m {len(C)} file dilewati:")
+		for(M,N)in C[:5]:print(f"         - {M} ({N})")
+		if len(C)>5:print(f"         ... dan {len(C)-5} lainnya")
+	G=len(B)>CLIPBOARD_MAX_CHARS;O=False if G else _copy_to_clipboard(B)
+	if O:print('\n  \x1b[32m[OK]\x1b[0m Hasil gabungan telah disalin ke clipboard.')
+	else:
+		H,P=_save_to_clipboard_folder(B,A)
+		if H:Q=f"Hasil terlalu besar untuk clipboard ({F:,} karakter)."if G else'Clipboard tidak tersedia.';print(f"\n  [33m[INFO][0m {Q}");print(f"  Hasil gabungan disimpan ke file:\n    {H}")
+		else:print(f"\n  [31m[GAGAL][0m Gagal menyimpan file: {P}")
+	input('\n  Tekan Enter untuk kembali ke menu...')
+if __name__=='__main__':run_menu(default_root=os.getcwd())
