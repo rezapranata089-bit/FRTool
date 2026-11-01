@@ -1343,12 +1343,16 @@ def scan_dan_apply(patch_text,dry_run=False):
 			filepath=os.path.join(SOURCE_ROOT,filename);path_ok=os.path.exists(filepath)
 			if path_ok and os.path.isdir(filepath):content=''
 			elif path_ok:
-				with open(filepath,'r',encoding='utf-8')as f:content=f.read()
+				try:
+					with open(filepath,'r',encoding='utf-8')as f:content=f.read()
+				except UnicodeDecodeError:content=''
 			else:
 				suffix_hits=_resolve_path_by_suffix(filename,SOURCE_ROOT)
 				if len(suffix_hits)==1:
 					filepath=os.path.join(SOURCE_ROOT,suffix_hits[0])
-					with open(filepath,'r',encoding='utf-8')as f:content=f.read()
+					try:
+						with open(filepath,'r',encoding='utf-8')as f:content=f.read()
+					except UnicodeDecodeError:content=''
 					path_ok=True;_claimed_matches[suffix_hits[0]]=filename;print(f"  [36m[Auto-Resolve][0m Path header tidak persis, dicocokkan via nama file ke: [1m{suffix_hits[0]}[0m")
 				else:print(f"  [INFO] Path tidak ditemukan, mencari di seluruh direktori...")
 		total_pairs_in_file=len(pairs)

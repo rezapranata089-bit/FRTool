@@ -8,7 +8,7 @@ JSON_MAX_SIZE=51200
 IGNORE_DIRS={'.git','.gradle','.idea','build','.kotlin','captures','.cxx','node_modules','__pycache__','.venv','venv','.next','dist','.vercel','.cache','.turbo','.patch_backups'}
 SEP_WIDTH=80
 CLIPBOARD_DIR='/storage/emulated/0/ClipBoard'
-CLIPBOARD_MAX_CHARS=500000
+CLIPBOARD_MAX_CHARS=900000
 def _save_to_clipboard_folder(text,root):
 	A=os.path.basename(root.rstrip(os.sep))or'project';A=''.join(A if A.isalnum()or A in'-_.'else'_'for A in A);E=datetime.now().strftime('%Y%m%d_%H%M%S');B=CLIPBOARD_DIR
 	if not os.path.isdir(os.path.dirname(CLIPBOARD_DIR)):B=os.path.expanduser('~/ClipBoard');print(f"  [33m[PERINGATAN][0m Storage Android tidak terbaca, simpan ke {B}")
@@ -126,7 +126,7 @@ def run_menu(default_root=None):
 		print(f"  [33m[SKIP][0m {len(C)} file dilewati:")
 		for(M,N)in C[:5]:print(f"         - {M} ({N})")
 		if len(C)>5:print(f"         ... dan {len(C)-5} lainnya")
-	G=len(B)>CLIPBOARD_MAX_CHARS;O=False if G else _copy_to_clipboard(B)
+	G=len(B)>=CLIPBOARD_MAX_CHARS;O=False if G else _copy_to_clipboard(B)
 	if O:print('\n  \x1b[32m[OK]\x1b[0m Hasil gabungan telah disalin ke clipboard.')
 	else:
 		H,P=_save_to_clipboard_folder(B,A)
