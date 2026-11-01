@@ -3,20 +3,25 @@ import os,sys,json,subprocess
 from datetime import datetime
 HISTORY_PATH=os.path.expanduser('~/.frtool_merge_history.json')
 DEFAULT_EXTS=['kt','xml','json','js','css','kts','pro','gradle','toml','java']
-EXT_TEMPLATES={'1':('Kotlin / Android',['kt','xml','json','kts','pro','gradle','toml','java']),'2':('Flutter / Dart',['dart','yaml','yml','json','gradle','kts','xml','plist','kt','java','properties','pro','frag','vert','arb']),'3':('HTML / Web',['html','css','js','json','ts','jsx','tsx']),'4':('Python',['py','json','toml','cfg','ini','txt']),'5':('Node / JS Backend',['js','ts','json','env','yml','yaml'])}
+EXT_TEMPLATES={'1':('Kotlin / Android',['kt','kts','java','xml','gradle','properties','pro','toml','json','yml','yaml','aidl','proto','cpp','c','h','cmake','md','txt']),'2':('Flutter / Dart',['dart','yaml','yml','json','gradle','kts','xml','plist','kt','java','swift','properties','pro','frag','vert','arb','toml','cfg','md','txt']),'3':('HTML / Web',['html','htm','css','scss','sass','less','js','mjs','cjs','json','ts','jsx','tsx','vue','svelte','svg','yml','yaml','env','md']),'4':('Python',['py','pyi','json','toml','cfg','ini','txt','yml','yaml','env','sh','md','sql']),'5':('Node / JS Backend',['js','mjs','cjs','ts','json','env','yml','yaml','sql','prisma','graphql','sh','md']),'6':('Java / Spring / Maven',['java','kt','xml','gradle','kts','properties','yml','yaml','json','sql','sh','md']),'7':('CI / DevOps / Config',['yml','yaml','json','toml','ini','cfg','conf','properties','env','sh','bat','tf','dockerfile','md','txt'])}
 JSON_MAX_SIZE=51200
 IGNORE_DIRS={'.git','.gradle','.idea','build','.kotlin','captures','.cxx','node_modules','__pycache__','.venv','venv','.next','dist','.vercel','.cache','.turbo','.patch_backups'}
 SEP_WIDTH=80
 CLIPBOARD_DIR='/storage/emulated/0/ClipBoard'
 CLIPBOARD_MAX_CHARS=900000
 def _save_to_clipboard_folder(text,root):
-	A=os.path.basename(root.rstrip(os.sep))or'project';A=''.join(A if A.isalnum()or A in'-_.'else'_'for A in A);E=datetime.now().strftime('%Y%m%d_%H%M%S');B=CLIPBOARD_DIR
-	if not os.path.isdir(os.path.dirname(CLIPBOARD_DIR)):B=os.path.expanduser('~/ClipBoard');print(f"  [33m[PERINGATAN][0m Storage Android tidak terbaca, simpan ke {B}")
+	B=os.path.basename(root.rstrip(os.sep))or'project';B=''.join(A if A.isalnum()or A in'-_.'else'_'for A in B);I=datetime.now().strftime('%Y%m%d_%H%M%S');C=CLIPBOARD_DIR
+	if not os.path.isdir(os.path.dirname(CLIPBOARD_DIR)):C=os.path.expanduser('~/ClipBoard');print(f"  [33m[PERINGATAN][0m Storage Android tidak terbaca, simpan ke {C}")
 	try:
-		C=os.path.join(B,A);os.makedirs(C,exist_ok=True);D=os.path.join(C,f"merge_{E}.txt")
-		with open(D,'w',encoding='utf-8')as F:F.write(text)
-		return D,None
-	except Exception as G:return None,str(G)
+		A=os.path.join(C,B);os.makedirs(A,exist_ok=True);D=os.path.join(A,'merge.txt')
+		for E in os.listdir(A):
+			if E.startswith('merge_')and E.endswith('.txt'):
+				try:os.remove(os.path.join(A,E))
+				except OSError:pass
+		F=D+'.tmp'
+		with open(F,'w',encoding='utf-8')as G:G.write(text)
+		os.replace(F,D);return D,None
+	except Exception as H:return None,str(H)
 def _clear():sys.stdout.write('\x1b[2J\x1b[H');sys.stdout.flush()
 def _load_history():
 	if os.path.exists(HISTORY_PATH):
